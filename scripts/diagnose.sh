@@ -48,31 +48,39 @@
 set -euo pipefail
 shopt -s inherit_errexit
 
-BUILDINFO_URL="${1:?usage: $0 <buildinfo-url> <file-offset> <outdir>}"
-OFFSET="${2:?usage: $0 <buildinfo-url> <file-offset> <outdir>}"
-OUTDIR="${3:?usage: $0 <buildinfo-url> <file-offset> <outdir>}"
+DIAG_URL="${1:?usage: $0 <buildinfo-url> <file-offset> <outdir>}"
+DIAG_OFFSET="${2:?usage: $0 <buildinfo-url> <file-offset> <outdir>}"
+DIAG_OUTDIR="${3:?usage: $0 <buildinfo-url> <file-offset> <outdir>}"
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DIAG_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Reuse verify.sh's fetchers rather than writing a second set. It returns
-# early when sourced, and its positional arguments are unused on that path.
+# Reuse verify.sh's fetchers rather than writing a second set.
+#
+# DIAG_ prefixes, and they are not decoration. verify.sh assigns OUTDIR from
+# its own fourth argument at the top of the file, before the guard that makes
+# it sourceable, so the placeholders below OVERWRITE anything this script has
+# already put there. The first version of this script kept its output
+# directory in OUTDIR, and every run wrote to `x/` while the workflow looked
+# in `out/` and failed the upload with "No files were found". The rebuild had
+# already taken twelve minutes by then.
+#
 # shellcheck source=scripts/verify.sh
-. "$ROOT/scripts/verify.sh" x x x x
+. "$DIAG_ROOT/scripts/verify.sh" x x x x
 
-case "$OFFSET" in
+case "$DIAG_OFFSET" in
     ''|*[!0-9]*) echo "FATAL: offset must be a decimal byte offset" >&2; exit 1 ;;
 esac
 
-mkdir -p "$OUTDIR"
-OUTDIR="$(cd "$OUTDIR" && pwd)"
+mkdir -p "$DIAG_OUTDIR"
+DIAG_OUTDIR="$(cd "$DIAG_OUTDIR" && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-base="${BUILDINFO_URL%/*}"
-name="${BUILDINFO_URL##*/}"
+base="${DIAG_URL%/*}"
+name="${DIAG_URL##*/}"
 
 echo "fetching the record and its source" >&2
-fetch "$BUILDINFO_URL" "$work/$name"
+fetch "$DIAG_URL" "$work/$name"
 dsc="$(checksum_files "$work/$name" | grep '\.dsc$' | head -1)"
 deb="$(checksum_files "$work/$name" | grep '\.deb$' | head -1)"
 [ -n "$dsc" ] && [ -n "$deb" ] || { echo "FATAL: the record names no .dsc or no .deb" >&2; exit 1; }
@@ -127,7 +135,7 @@ PY
 
 echo "rebuilding with symbols (the checksum comparison is expected to fail)" >&2
 set +e
-"$ROOT/verify/rebuild.sh" "$work" > "$work/rebuild.log" 2>&1
+"$DIAG_ROOT/verify/rebuild.sh" "$work" > "$work/rebuild.log" 2>&1
 set -e
 tail -5 "$work/rebuild.log" >&2
 
@@ -161,33 +169,50 @@ pool_initial="$(printf '%s' "${deb%%_*}" | cut -c1)"
 case "${deb%%_*}" in lib*) pool_initial="$(printf '%s' "${deb%%_*}" | cut -c1-4)" ;; esac
 source_name="$(awk '/^Source: /{print $2; exit}' "$work/$name")"
 pub_url="https://apt.pkg.haus/pool/main/$pool_initial/$source_name/$deb"
+TEXT_VERDICT="UNVERIFIED: the comparison did not run"
 echo "comparing .text against the published build" >&2
 if fetch "$pub_url" "$work/published.deb"; then
     pub="$work/pub"; mkdir -p "$pub"
     dpkg-deb --fsys-tarfile "$work/published.deb" | tar -xf - -C "$pub"
     pubbin="$pub${bin#"$unpack"}"
-    cp "$bin" "$work/stripped-copy"
-    strip --strip-unneeded "$work/stripped-copy" 2>/dev/null || true
-    for f in "$work/stripped-copy" "$pubbin"; do
-        readelf -x .text "$f" 2>/dev/null | sha256sum | cut -d' ' -f1
-    done > "$work/textsums"
-    if [ "$(sort -u "$work/textsums" | wc -l)" -eq 1 ]; then
-        echo "  .text is byte-identical to the published build" >&2
+    # HOW MUCH .text differs, not whether. A yes/no verdict is useless here:
+    # this package's whole problem is that its codegen flaps, so "differs" is
+    # the expected answer and says nothing about whether the offset still
+    # lands in the same function. A handful of differing bytes at equal
+    # length means the layout held and the symbol is sound; a different
+    # length, or thousands of bytes, means it did not and the answer is a
+    # guess. The first version printed a boolean and left that undecidable.
+    objcopy -O binary --only-section=.text "$bin" "$work/a.text" 2>/dev/null || true
+    objcopy -O binary --only-section=.text "$pubbin" "$work/b.text" 2>/dev/null || true
+    if [ -s "$work/a.text" ] && [ -s "$work/b.text" ]; then
+        sa="$(stat -c %s "$work/a.text")"; sb="$(stat -c %s "$work/b.text")"
+        if [ "$sa" -ne "$sb" ]; then
+            TEXT_VERDICT="UNSOUND: .text is $sa bytes here and $sb published, so the layout moved and the offset means something else there"
+        else
+            nd="$(cmp -l "$work/a.text" "$work/b.text" 2>/dev/null | wc -l)"
+            if [ "$nd" -eq 0 ]; then
+                TEXT_VERDICT="SOUND: .text is byte-identical over $sa bytes"
+            elif [ "$nd" -lt 1000 ]; then
+                TEXT_VERDICT="SOUND: .text is the same $sa bytes long and $nd byte(s) differ, which is codegen flap and does not move function boundaries"
+            else
+                TEXT_VERDICT="DOUBTFUL: .text is the same length but $nd of $sa bytes differ, which is more than register-level flap"
+            fi
+        fi
     else
-        echo "  .text DIFFERS from the published build. That is expected on a" >&2
-        echo "  package whose codegen flaps, but it means the offset may land" >&2
-        echo "  in a different function than it did there. Treat the symbol" >&2
-        echo "  below as provisional and say so." >&2
+        TEXT_VERDICT="UNVERIFIED: .text could not be extracted from both builds"
     fi
+    echo "  $TEXT_VERDICT" >&2
 else
-    echo "  could not fetch the published .deb; the offset mapping is unverified" >&2
+    TEXT_VERDICT="UNVERIFIED: the published .deb could not be fetched"
+    echo "  $TEXT_VERDICT" >&2
 fi
 
 # --- the answer --------------------------------------------------------------
-cp "$bin" "$OUTDIR/$(basename "$bin").unstripped"
-readelf -sW "$bin" > "$OUTDIR/symbols.txt"
+cp "$bin" "$DIAG_OUTDIR/$(basename "$bin").unstripped"
+readelf -sW "$bin" > "$DIAG_OUTDIR/symbols.txt"
 
-python3 - "$bin" "$OFFSET" "$OUTDIR/report.txt" <<'PY'
+printf 'offset mapping: %s\n' "$TEXT_VERDICT" > "$DIAG_OUTDIR/report.txt"
+python3 - "$bin" "$DIAG_OFFSET" "$DIAG_OUTDIR/report.txt" <<'PY'
 import re, subprocess, sys
 elf, off, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
 secs = []
@@ -225,8 +250,8 @@ else:
                        if m] if a <= va)[-3:]
         for a,n,x in near:
             lines.append(f"    nearest below: {x} at 0x{a:x} (+{va-a})")
-open(out,"w").write("\n".join(lines) + "\n")
+open(out,"a").write("\n".join(lines) + "\n")
 print("\n".join(lines))
 PY
 
-echo "wrote $OUTDIR/report.txt, symbols.txt and the unstripped binary" >&2
+echo "wrote $DIAG_OUTDIR/report.txt, symbols.txt and the unstripped binary" >&2

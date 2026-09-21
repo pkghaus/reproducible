@@ -43,7 +43,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=147
+EXPECTED_ASSERTIONS=151
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -1001,9 +1001,37 @@ BIFIX
     # The answer is only as good as the claim that both builds laid out .text
     # the same way, so the script has to check that rather than assume it.
     case "$body" in
-        *"readelf -x .text"*) ok "the offset mapping is checked against the published build" ;;
+        *"--only-section=.text"*) ok "the offset mapping is checked against the published build" ;;
         *) no "the offset mapping is checked against the published build" "no .text comparison" ;;
     esac
+    # Magnitude, not a boolean. On a package whose codegen flaps "differs" is
+    # the expected answer and decides nothing; a few bytes at equal length
+    # means the layout held, a different length means the offset means
+    # something else over there.
+    case "$body" in
+        *"UNSOUND"*) ok "a moved .text length is called unsound" ;;
+        *) no "a moved .text length is called unsound" "no length check" ;;
+    esac
+    case "$body" in
+        *"DOUBTFUL"*) ok "and a large byte delta is called doubtful" ;;
+        *) no "and a large byte delta is called doubtful" "no magnitude branch" ;;
+    esac
+    # The verdict has to reach the artifact, not just the log: a run's logs
+    # expire and the report is what someone reads later.
+    case "$body" in
+        *'offset mapping: %s'*) ok "the verdict is written into the report" ;;
+        *) no "the verdict is written into the report" "report does not carry it" ;;
+    esac
+
+    # verify.sh assigns OUTDIR and ROOT from its own arguments before the
+    # guard that makes it sourceable, so a sourcing script that keeps state
+    # under those names has it silently overwritten. It did: output went to
+    # `x/` and the upload failed after a twelve-minute rebuild.
+    clash="$(comm -12 \
+        <(awk '/^if \[ "\$\{BASH_SOURCE\[0\]\}" != "\$\{0\}" \]/{exit} /^[A-Z_]+=/{sub(/=.*/,""); print}' \
+            "$ROOT/scripts/verify.sh" | sort -u) \
+        <(awk '/^[A-Z_]+=/{sub(/=.*/,""); print}' "$dg" | sort -u) | tr '\n' ' ')"
+    eq "diagnose.sh assigns no variable verify.sh clobbers" "" "$(printf '%s' "$clash" | tr -d ' ')"
     # And it must refuse a build that came back stripped anyway, which is the
     # silent-failure shape: a symbol lookup on a stripped binary finds nothing
     # and would read as "no enclosing function".
