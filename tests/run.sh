@@ -43,7 +43,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=131
+EXPECTED_ASSERTIONS=144
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -924,6 +924,104 @@ PYOLD
         no "publish.sh runs sticky-bad.py before uploading" \
            "sticky at ${sticky_at:-none}, upload at ${upload_at:-none}"
     fi
+    exit $((fail > 0))
+) || groups_failed=$((groups_failed + 1))
+
+echo "the diagnostic names a symbol without changing what it measures"
+(
+    set +e; shopt -u inherit_errexit
+    dg="$ROOT/scripts/diagnose.sh"
+    eq "diagnose.sh exists and is executable" "yes" \
+       "$([ -x "$dg" ] && echo yes || echo no)"
+
+    # The load-bearing edit, run as the shipped script runs it. Extracted from
+    # diagnose.sh rather than copied here, so a change to the real regex is
+    # what this exercises.
+    edit="$(mktemp)"
+    awk '/^python3 - "\$work\/\$name" <<.PY.$/{f=1;next} f&&/^PY$/{exit} f' "$dg" > "$edit"
+    eq "the nostrip edit was extracted from the shipped script" "yes" \
+       "$([ -s "$edit" ] && echo yes || echo no)"
+
+    rec="$(mktemp)"
+    cat > "$rec" <<'BIFIX'
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Format: 1.0
+Environment:
+ DEB_BUILD_OPTIONS="parallel=4 noautodbgsym"
+ SOURCE_DATE_EPOCH="1789560674"
+BIFIX
+    python3 "$edit" "$rec" >/dev/null 2>&1
+    got="$(grep 'DEB_BUILD_OPTIONS' "$rec")"
+
+    # Appended, not replaced. parallel= and noautodbgsym are part of how the
+    # original was built; dropping them would change what is being compared,
+    # which would make the symbol a statement about a different binary.
+    case "$got" in
+        *'parallel=4'*) ok "the recorded options survive the edit" ;;
+        *) no "the recorded options survive the edit" "line is [$got]" ;;
+    esac
+    case "$got" in
+        *nostrip*) ok "and nostrip is added" ;;
+        *) no "and nostrip is added" "line is [$got]" ;;
+    esac
+    eq "SOURCE_DATE_EPOCH is untouched" "1" \
+       "$(grep -c 'SOURCE_DATE_EPOCH="1789560674"' "$rec")"
+
+    # Idempotent: a second pass must not append it twice, or the record grows
+    # a token per run and stops matching what it claims to replay.
+    python3 "$edit" "$rec" >/dev/null 2>&1
+    eq "running the edit twice adds nostrip once" "1" \
+       "$(grep -o 'nostrip' "$rec" | wc -l | tr -d ' ')"
+
+    # A record with nothing to extend must fail loudly rather than build
+    # something that is silently still stripped.
+    bad="$(mktemp)"; printf 'Format: 1.0\nEnvironment:\n SOURCE_DATE_EPOCH="1"\n' > "$bad"
+    python3 "$edit" "$bad" >/dev/null 2>&1
+    eq "a record without DEB_BUILD_OPTIONS is refused" "1" "$?"
+    rm -f "$edit" "$rec" "$bad"
+
+    body="$(cat "$dg")"
+    # The answer is only as good as the claim that both builds laid out .text
+    # the same way, so the script has to check that rather than assume it.
+    case "$body" in
+        *"readelf -x .text"*) ok "the offset mapping is checked against the published build" ;;
+        *) no "the offset mapping is checked against the published build" "no .text comparison" ;;
+    esac
+    # And it must refuse a build that came back stripped anyway, which is the
+    # silent-failure shape: a symbol lookup on a stripped binary finds nothing
+    # and would read as "no enclosing function".
+    case "$body" in
+        *"still stripped"*) ok "a rebuild that is still stripped is fatal" ;;
+        *) no "a rebuild that is still stripped is fatal" "no guard found" ;;
+    esac
+    exit $((fail > 0))
+) || groups_failed=$((groups_failed + 1))
+
+echo "the diagnostic workflow builds natively and keeps what it produces"
+(
+    set +e; shopt -u inherit_errexit
+    wf="$ROOT/.github/workflows/diagnose.yml"
+    eq "diagnose.yml exists" "yes" "$([ -f "$wf" ] && echo yes || echo no)"
+    body="$(cat "$wf")"
+
+    # Native arm, never QEMU: a cross-emulated build takes hours and the whole
+    # point is to reproduce one architecture's code layout.
+    case "$body" in
+        *"ubuntu-24.04-arm"*) ok "arm64 runs on a native arm runner" ;;
+        *) no "arm64 runs on a native arm runner" "no ubuntu-24.04-arm" ;;
+    esac
+    # Manual only. A schedule would spend the snapshot.debian.org budget the
+    # verifier rations, to answer a question nobody asked.
+    eq "it is dispatch-only, with no schedule" "0" \
+       "$(printf '%s\n' "$body" | grep -c '^  schedule:')"
+    # Here an empty artifact IS a failure, unlike the evidence upload in
+    # verify.yml: this workflow exists to produce those files.
+    case "$body" in
+        *"if-no-files-found: error"*) ok "producing nothing is a failure here" ;;
+        *) no "producing nothing is a failure here" "not strict" ;;
+    esac
     exit $((fail > 0))
 ) || groups_failed=$((groups_failed + 1))
 
