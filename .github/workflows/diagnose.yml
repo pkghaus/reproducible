@@ -1,18 +1,21 @@
 name: Diagnose
 
-# Names the function behind a byte that differs in a BAD rebuild.
+# Names the functions a non-deterministic build disagrees with itself about.
 #
-# A BAD verdict says the bytes differed, and since 2026-09-21 it keeps the
-# rebuilt .deb so the difference can be located. Locating is not naming: every
-# binary the archive ships is stripped, so an offset in .text resolves to
-# nothing at all. zola's arm64 failure was pinned down to four bytes and one
-# register swap within the hour, and then sat there, because nobody could say
-# which crate it was in.
+# It builds one record TWICE with symbols kept and diffs the two against each
+# other. Every binary the archive ships is stripped, so an offset in .text
+# resolves to nothing, and the obvious fix -- one build with symbols, mapped
+# against the published one -- does not work: measured 2026-09-21 on
+# zola/arm64, keeping symbols made .text 19,456 bytes longer, so the offset
+# pointed at different code and the symbol it produced had to be withdrawn.
 #
-# This rebuilds the same record with `nostrip` appended to its recorded
-# DEB_BUILD_OPTIONS. dh_strip runs after linking and does not move .text, so
-# the offset carries over and readelf answers the question. One build, not a
-# bisect.
+# Two builds in one configuration share a layout by construction, so a
+# differing byte maps to a symbol in the same build family and nothing has to
+# be assumed about the published binary.
+#
+# A pair can come back identical; on a package that fails about half the time
+# that is the expected outcome about half of all runs, and it is reported as a
+# result rather than an error.
 #
 # Manual by design. It is a diagnostic, it writes nothing to the bucket, and
 # the run it produces must never be published -- DEB_BUILD_OPTIONS is recorded
@@ -25,13 +28,6 @@ on:
         description: >
           Full URL of the record to rebuild, as the verdict JSON publishes it,
           e.g. https://buildinfos.pkg.haus/buildinfo-pool/z/zola/zola_0.23.6-3_arm64.buildinfo
-        type: string
-        required: true
-      offset:
-        description: >
-          Decimal file offset into the binary, as `cmp -l` reports it against
-          the published build. Resolved to a section, an address and the symbol
-          that encloses it.
         type: string
         required: true
       arch:
@@ -62,8 +58,9 @@ jobs:
     # middle -- in a GitHub expression `a && b || c` yields c whenever b is
     # falsy, so the obvious spelling would put every run on one runner.
     runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    # A full Rust build plus dependency resolution from a rate-limited mirror.
-    timeout-minutes: 120
+    # TWO full Rust builds, serially, plus dependency resolution from a
+    # rate-limited mirror.
+    timeout-minutes: 180
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -71,11 +68,10 @@ jobs:
           persist-credentials: false
 
       # Every expression through env:, none inside the run: block.
-      - name: Rebuild with symbols and resolve the offset
+      - name: Build twice with symbols and diff them
         env:
           IN_URL: ${{ inputs.buildinfo_url }}
-          IN_OFFSET: ${{ inputs.offset }}
-        run: scripts/diagnose.sh "$IN_URL" "$IN_OFFSET" out
+        run: scripts/diagnose.sh "$IN_URL" out
 
       - name: Show the report in the summary
         if: always()
@@ -89,7 +85,7 @@ jobs:
           fi
 
       # always(), because a run that got far enough to produce an unstripped
-      # binary and then failed the offset lookup still did the expensive half.
+      # binary and then failed the diff still did the expensive half.
       - name: Upload the unstripped binary and symbol map
         if: always()
         uses: actions/upload-artifact@v7

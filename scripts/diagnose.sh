@@ -1,75 +1,59 @@
 #!/usr/bin/env bash
 #
-# Name the function behind a byte that differs in a BAD rebuild.
+# Name the functions a non-deterministic build disagrees with itself about.
 #
-#   scripts/diagnose.sh <buildinfo-url> <file-offset> <outdir>
+#   scripts/diagnose.sh <buildinfo-url> <outdir>
 #
-# A BAD verdict says the bytes differed and, since 2026-09-21, keeps the
-# rebuilt .deb so the difference can be located. Locating it is not naming it:
-# every binary this archive ships is stripped, so an offset in .text resolves
-# to nothing. zola's arm64 failure sat there for a day -- known to be a
-# register swap, in an unknown function, in an unknown crate.
+# Builds the same record TWICE with symbols kept, diffs the two binaries
+# against each other, and resolves every differing byte in .text to the symbol
+# that contains it.
 #
-# This rebuilds the same record with the two settings that keep symbols:
-# `nostrip` in DEB_BUILD_OPTIONS so dh_strip leaves them, and
-# CARGO_PROFILE_RELEASE_STRIP=none because a Rust package whose upstream
-# manifest says `[profile.release] strip = true` is stripped by cargo at link
-# time, before dh_strip can be told anything. Neither alone suffices; zola
-# needed both, and the first attempt with only nostrip came back stripped.
+# Why twice, and not against the published build. The first version built once
+# and mapped an offset taken from a published-versus-rebuilt diff. That is a
+# cross-build offset translation, valid only if both binaries laid .text out
+# identically. They did not: measured 2026-09-21 on zola/arm64, the diagnostic
+# build's .text came out 19,456 bytes longer than the published one, so the
+# offset pointed at different code and the symbol it produced was withdrawn.
+# Keeping symbols can perturb what LTO internalises and what the linker
+# collects, so ANY build that retains them risks disturbing what it measures.
 #
-# Stripping removes .symtab and does not move .text, so the offset carries
-# over unchanged and `readelf -s` answers the question. One build, not a
-# bisect.
+# Two builds in one configuration removes the translation. Both halves share a
+# layout by construction, both carry symbols, and a differing byte maps to a
+# symbol in the same build family. Nothing has to be assumed about the
+# published binary at all.
 #
-# Why editing the record is safe, and where the limits are:
+# What this establishes, and what it does not. It names the function that
+# flapped in THIS configuration, which is a proxy for the shipped one, since
+# keeping symbols is itself a change. The proxy is closed by verification
+# rather than by argument: apply the fix, then require the published page to
+# report GOOD on every leg. On a leg known to flap that means about five
+# consecutive GOODs, because two in a row on a half-failing leg happen a
+# quarter of the time by luck.
 #
-#  - debrebuild does not verify the signature. Its own documentation says so
-#    ("the signature (if present) is discarded as debrebuild does not support
-#    verifying"), and it warns on stderr when one is present. So a clearsigned
-#    record can be edited and still parsed.
-#  - it DOES verify the .dsc, against the checksums inside the record. Those
-#    are untouched here, so that check still passes. Do not edit anything else.
-#  - everything that decides code generation is replayed as recorded: the
-#    pinned Installed-Build-Depends, SOURCE_DATE_EPOCH, the build path, and
-#    the rest of DEB_BUILD_OPTIONS. `nostrip` only tells dh_strip to do
-#    nothing.
+# A pair can come back identical. zola/arm64 fails roughly half the time, so
+# that is the expected outcome about half of all runs. It is reported as a
+# result, not an error. Run it again.
 #
-# The rebuild's own checksum comparison WILL fail, and that is expected: an
-# unstripped binary cannot match a stripped one. The artifact is the output,
-# not the verdict. Never publish a package built this way -- DEB_BUILD_OPTIONS
-# is recorded in .buildinfo, so such a build is self-identifying and wrong.
-#
-# The offset mapping is checked rather than assumed. A copy of the diagnostic
-# binary is stripped and its .text compared against the published one; if they
-# differ by more than the handful of bytes that flap, the environments did not
-# match and the symbol would be a guess. That check is the reason to trust the
-# answer, so it is fatal rather than advisory.
+# Never publish a package built this way. DEB_BUILD_OPTIONS is recorded in
+# .buildinfo, so a nostrip build is self-identifying and wrong to ship.
 
 set -euo pipefail
 shopt -s inherit_errexit
 
-DIAG_URL="${1:?usage: $0 <buildinfo-url> <file-offset> <outdir>}"
-DIAG_OFFSET="${2:?usage: $0 <buildinfo-url> <file-offset> <outdir>}"
-DIAG_OUTDIR="${3:?usage: $0 <buildinfo-url> <file-offset> <outdir>}"
+DIAG_URL="${1:?usage: $0 <buildinfo-url> <outdir>}"
+DIAG_OUTDIR="${2:?usage: $0 <buildinfo-url> <outdir>}"
 
 DIAG_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Reuse verify.sh's fetchers rather than writing a second set.
-#
-# DIAG_ prefixes, and they are not decoration. verify.sh assigns OUTDIR from
-# its own fourth argument at the top of the file, before the guard that makes
-# it sourceable, so the placeholders below OVERWRITE anything this script has
-# already put there. The first version of this script kept its output
-# directory in OUTDIR, and every run wrote to `x/` while the workflow looked
-# in `out/` and failed the upload with "No files were found". The rebuild had
-# already taken twelve minutes by then.
+# DIAG_ prefixes, and they are not decoration. verify.sh assigns OUTDIR and
+# ROOT from its own arguments at the top of the file, before the guard that
+# makes it sourceable, so the placeholders below OVERWRITE anything this
+# script has already put there. An earlier version kept its output directory
+# in OUTDIR; every run wrote to `x/` while the workflow looked in `out/` and
+# failed the upload after a twelve-minute rebuild.
 #
 # shellcheck source=scripts/verify.sh
 . "$DIAG_ROOT/scripts/verify.sh" x x x x
-
-case "$DIAG_OFFSET" in
-    ''|*[!0-9]*) echo "FATAL: offset must be a decimal byte offset" >&2; exit 1 ;;
-esac
 
 mkdir -p "$DIAG_OUTDIR"
 DIAG_OUTDIR="$(cd "$DIAG_OUTDIR" && pwd)"
@@ -78,53 +62,48 @@ trap 'rm -rf "$work"' EXIT
 
 base="${DIAG_URL%/*}"
 name="${DIAG_URL##*/}"
+inputs="$work/inputs"
+mkdir -p "$inputs"
 
 echo "fetching the record and its source" >&2
-fetch "$DIAG_URL" "$work/$name"
-dsc="$(checksum_files "$work/$name" | grep '\.dsc$' | head -1)"
-deb="$(checksum_files "$work/$name" | grep '\.deb$' | head -1)"
-[ -n "$dsc" ] && [ -n "$deb" ] || { echo "FATAL: the record names no .dsc or no .deb" >&2; exit 1; }
-fetch "$base/$dsc" "$work/$dsc"
-for f in $(checksum_files "$work/$dsc"); do
-    fetch "$base/$f" "$work/$f"
+fetch "$DIAG_URL" "$inputs/$name"
+dsc="$(checksum_files "$inputs/$name" | grep '\.dsc$' | head -1)"
+[ -n "$dsc" ] || { echo "FATAL: the record names no .dsc" >&2; exit 1; }
+fetch "$base/$dsc" "$inputs/$dsc"
+for f in $(checksum_files "$inputs/$dsc"); do
+    fetch "$base/$f" "$inputs/$f"
 done
 
-# Append nostrip to the RECORDED options rather than replacing them: parallel=
-# and noautodbgsym are part of how the original was built and dropping them
-# would change what is being compared.
-python3 - "$work/$name" <<'PY'
+# Two settings, both needed, in this order. nostrip stops dh_strip.
+# CARGO_PROFILE_RELEASE_STRIP stops cargo, which for a Rust package whose
+# upstream manifest carries `[profile.release] strip = true` has already
+# removed the symbols at LINK time before dh_strip sees anything. zola does,
+# and an earlier run that set only nostrip came back stripped.
+#
+# Appended to the RECORDED options rather than replacing them: parallel= and
+# noautodbgsym are part of how the original was built.
+#
+# The .dsc cannot be patched instead: debrebuild verifies it against the
+# checksums in this record and refuses an edited one. The record itself can be
+# edited because debrebuild states it discards the signature without verifying.
+python3 - "$inputs/$name" <<'PY'
 import re, sys
 p = sys.argv[1]
 s = open(p, encoding="utf-8").read()
 m = re.search(r'^( DEB_BUILD_OPTIONS=")([^"]*)(")$', s, re.M)
 if not m:
     sys.exit("FATAL: the record has no DEB_BUILD_OPTIONS to extend")
-
-# nostrip stops dh_strip. On its own it is not enough for a Rust package:
-# measured 2026-09-21 against zola, whose upstream Cargo.toml carries
-# `[profile.release] strip = true`, so cargo strips at LINK time and dh_strip
-# never sees symbols to keep. The first run of this script produced a stripped
-# binary and said so, which is why the guard below exists.
-#
-# CARGO_PROFILE_RELEASE_STRIP is the override, confirmed on a throwaway crate
-# with `strip = true` in its manifest: 0 .symtab sections without it, 1 with.
-# Both are needed and in this order -- cargo has to leave the symbols in and
-# then dh_strip has to leave them alone.
-#
-# The .dsc cannot be patched instead: debrebuild verifies it against the
-# checksums in this record and refuses an edited one.
 changed = []
 if "nostrip" not in m.group(2).split():
     s = s[:m.start()] + m.group(1) + m.group(2) + " nostrip" + m.group(3) + s[m.end():]
-    changed.append(f"DEB_BUILD_OPTIONS += nostrip")
-
+    changed.append("DEB_BUILD_OPTIONS += nostrip")
 if "CARGO_PROFILE_RELEASE_STRIP" not in s:
     # Same one-leading-space shape as its siblings: debrebuild splits the
-    # field by lines and each line on the first '=', so any name works.
+    # field by line and each line on the first '=', so any name works but a
+    # line without the space parses as a name that is not a variable.
     m2 = re.search(r'^( DEB_BUILD_OPTIONS="[^"]*")$', s, re.M)
     s = s[:m2.end()] + '\n CARGO_PROFILE_RELEASE_STRIP="none"' + s[m2.end():]
     changed.append('CARGO_PROFILE_RELEASE_STRIP="none"')
-
 if changed:
     open(p, "w", encoding="utf-8").write(s)
     for c in changed:
@@ -133,125 +112,152 @@ else:
     print("  the record already asks for both", file=sys.stderr)
 PY
 
-echo "rebuilding with symbols (the checksum comparison is expected to fail)" >&2
-set +e
-"$DIAG_ROOT/verify/rebuild.sh" "$work" > "$work/rebuild.log" 2>&1
-set -e
-tail -5 "$work/rebuild.log" >&2
-
-built="$(find "$work/rebuilt" -maxdepth 1 -name '*.deb' -print -quit 2>/dev/null || true)"
-[ -n "$built" ] || {
-    echo "FATAL: no .deb was produced; last 40 lines of the rebuild:" >&2
-    tail -40 "$work/rebuild.log" >&2
-    exit 1
-}
-
 # The binary under test: the largest ELF in the package, which for every Rust
 # and Go package here is the program itself.
-unpack="$work/unpack"; mkdir -p "$unpack"
-dpkg-deb --fsys-tarfile "$built" | tar -xf - -C "$unpack"
-# -printf rather than a pipe into xargs: no word splitting, and the size comes
-# out of find so the largest ELF is picked without a second stat pass.
-bin="$(find "$unpack" -type f -exec sh -c 'head -c4 "$1" | grep -q ELF' _ {} \; \
-       -printf '%s\t%p\n' | sort -rn | head -1 | cut -f2-)"
-[ -n "$bin" ] || { echo "FATAL: no ELF binary in the rebuilt package" >&2; exit 1; }
-echo "  binary: ${bin#"$unpack"} ($(stat -c %s "$bin") bytes)" >&2
+extract_binary() { # build-dir -> path on stdout
+    local d="$1" built unpack
+    built="$(find "$d/rebuilt" -maxdepth 1 -name '*.deb' -print -quit 2>/dev/null || true)"
+    [ -n "$built" ] || return 1
+    unpack="$d/unpack"; mkdir -p "$unpack"
+    dpkg-deb --fsys-tarfile "$built" | tar -xf - -C "$unpack"
+    # -printf rather than a pipe into xargs: no word splitting, and the size
+    # comes out of find so the largest is picked without a second stat pass.
+    find "$unpack" -type f -exec sh -c 'head -c4 "$1" | grep -q ELF' _ {} \; \
+        -printf '%s\t%p\n' | sort -rn | head -1 | cut -f2-
+}
 
-if ! readelf -S "$bin" | grep -q '\.symtab'; then
-    echo "FATAL: the rebuild is still stripped -- nostrip did not take effect" >&2
-    exit 1
-fi
-
-# --- the check that makes the answer trustworthy -----------------------------
-# Same offset in a different build is only the same code if the two builds
-# agree. Strip a copy and compare .text against what the archive serves.
-pool_initial="$(printf '%s' "${deb%%_*}" | cut -c1)"
-case "${deb%%_*}" in lib*) pool_initial="$(printf '%s' "${deb%%_*}" | cut -c1-4)" ;; esac
-source_name="$(awk '/^Source: /{print $2; exit}' "$work/$name")"
-pub_url="https://apt.pkg.haus/pool/main/$pool_initial/$source_name/$deb"
-TEXT_VERDICT="UNVERIFIED: the comparison did not run"
-echo "comparing .text against the published build" >&2
-if fetch "$pub_url" "$work/published.deb"; then
-    pub="$work/pub"; mkdir -p "$pub"
-    dpkg-deb --fsys-tarfile "$work/published.deb" | tar -xf - -C "$pub"
-    pubbin="$pub${bin#"$unpack"}"
-    # HOW MUCH .text differs, not whether. A yes/no verdict is useless here:
-    # this package's whole problem is that its codegen flaps, so "differs" is
-    # the expected answer and says nothing about whether the offset still
-    # lands in the same function. A handful of differing bytes at equal
-    # length means the layout held and the symbol is sound; a different
-    # length, or thousands of bytes, means it did not and the answer is a
-    # guess. The first version printed a boolean and left that undecidable.
-    objcopy -O binary --only-section=.text "$bin" "$work/a.text" 2>/dev/null || true
-    objcopy -O binary --only-section=.text "$pubbin" "$work/b.text" 2>/dev/null || true
-    if [ -s "$work/a.text" ] && [ -s "$work/b.text" ]; then
-        sa="$(stat -c %s "$work/a.text")"; sb="$(stat -c %s "$work/b.text")"
-        if [ "$sa" -ne "$sb" ]; then
-            TEXT_VERDICT="UNSOUND: .text is $sa bytes here and $sb published, so the layout moved and the offset means something else there"
-        else
-            nd="$(cmp -l "$work/a.text" "$work/b.text" 2>/dev/null | wc -l)"
-            if [ "$nd" -eq 0 ]; then
-                TEXT_VERDICT="SOUND: .text is byte-identical over $sa bytes"
-            elif [ "$nd" -lt 1000 ]; then
-                TEXT_VERDICT="SOUND: .text is the same $sa bytes long and $nd byte(s) differ, which is codegen flap and does not move function boundaries"
-            else
-                TEXT_VERDICT="DOUBTFUL: .text is the same length but $nd of $sa bytes differ, which is more than register-level flap"
-            fi
-        fi
-    else
-        TEXT_VERDICT="UNVERIFIED: .text could not be extracted from both builds"
+for i in 1 2; do
+    d="$work/b$i"
+    mkdir -p "$d"
+    cp "$inputs"/* "$d/"
+    echo "build $i of 2 (its checksum comparison is expected to fail: an" >&2
+    echo "  unstripped binary cannot match a stripped record)" >&2
+    set +e
+    "$DIAG_ROOT/verify/rebuild.sh" "$d" > "$d/rebuild.log" 2>&1
+    set -e
+    bin="$(extract_binary "$d" || true)"
+    [ -n "$bin" ] || {
+        echo "FATAL: build $i produced no .deb; last 40 lines:" >&2
+        tail -40 "$d/rebuild.log" >&2
+        exit 1
+    }
+    if ! readelf -S "$bin" | grep -q '\.symtab'; then
+        echo "FATAL: build $i came back stripped, so no symbol can be resolved." >&2
+        echo "       A lookup on a stripped binary answers 'no enclosing" >&2
+        echo "       function', which reads like a fact about the code." >&2
+        exit 1
     fi
-    echo "  $TEXT_VERDICT" >&2
-else
-    TEXT_VERDICT="UNVERIFIED: the published .deb could not be fetched"
-    echo "  $TEXT_VERDICT" >&2
-fi
+    printf '%s\n' "$bin" > "$d/binpath"
+    echo "  build $i: ${bin##*/} $(stat -c %s "$bin") bytes" >&2
+done
 
-# --- the answer --------------------------------------------------------------
-cp "$bin" "$DIAG_OUTDIR/$(basename "$bin").unstripped"
-readelf -sW "$bin" > "$DIAG_OUTDIR/symbols.txt"
+a="$(cat "$work/b1/binpath")"
+b="$(cat "$work/b2/binpath")"
+cp "$a" "$DIAG_OUTDIR/build1.unstripped"
+cp "$b" "$DIAG_OUTDIR/build2.unstripped"
+readelf -sW "$a" > "$DIAG_OUTDIR/symbols.txt"
 
-printf 'offset mapping: %s\n' "$TEXT_VERDICT" > "$DIAG_OUTDIR/report.txt"
-python3 - "$bin" "$DIAG_OFFSET" "$DIAG_OUTDIR/report.txt" <<'PY'
-import re, subprocess, sys
-elf, off, out = sys.argv[1], int(sys.argv[2]), sys.argv[3]
-secs = []
-for line in subprocess.run(["readelf","-S","-W",elf],capture_output=True,text=True).stdout.splitlines():
-    m = re.match(r'\s*\[\s*\d+\]\s+(\S+)\s+\S+\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)', line)
-    if m:
-        secs.append((m.group(1), int(m.group(2),16), int(m.group(3),16), int(m.group(4),16)))
-hit = next((s for s in secs if s[2] <= off < s[2]+s[3]), None)
-lines = [f"file offset {off}"]
-if not hit:
-    lines.append("  falls outside every section")
-else:
-    nm, addr, o, sz = hit
-    va = off - o + addr
-    lines.append(f"  section {nm}, virtual address 0x{va:x}")
-    syms = []
-    for line in subprocess.run(["readelf","-sW",elf],capture_output=True,text=True).stdout.splitlines():
-        m = re.match(r'\s*\d+:\s+([0-9a-f]+)\s+(\d+)\s+FUNC\s+\S+\s+\S+\s+\S+\s+(\S+)', line)
+python3 - "$a" "$b" "$DIAG_OUTDIR/report.txt" <<'PY'
+import bisect, re, subprocess, sys
+
+a, b, out = sys.argv[1], sys.argv[2], sys.argv[3]
+lines = []
+def say(s):
+    lines.append(s)
+    print(s)
+
+def sections(elf):
+    r = []
+    for line in subprocess.run(["readelf", "-S", "-W", elf],
+                               capture_output=True, text=True).stdout.splitlines():
+        m = re.match(r'\s*\[\s*\d+\]\s+(\S+)\s+\S+\s+([0-9a-f]+)\s+([0-9a-f]+)\s+([0-9a-f]+)',
+                     line)
         if m:
-            a, n, nmv = int(m.group(1),16), int(m.group(2)), m.group(3)
-            if n and a <= va < a+n: syms.append((a, n, nmv))
-    if syms:
-        a, n, nmv = syms[0]
-        lines.append(f"  symbol {nmv}")
-        lines.append(f"    starts 0x{a:x}, {n} bytes, offset {va-a} into it")
-        # The crate is the first path-ish component of a mangled Rust name.
-        crate = re.search(r'_ZN\d+([A-Za-z0-9_]+)', nmv)
-        if crate: lines.append(f"    crate (from the mangled name): {crate.group(1)}")
+            r.append((m.group(1), int(m.group(2), 16),
+                      int(m.group(3), 16), int(m.group(4), 16)))
+    return r
+
+def funcs(elf):
+    r = []
+    for line in subprocess.run(["readelf", "-sW", elf],
+                               capture_output=True, text=True).stdout.splitlines():
+        m = re.match(r'\s*\d+:\s+([0-9a-f]+)\s+(\d+)\s+FUNC\s+\S+\s+\S+\s+\S+\s+(\S+)', line)
+        if m and int(m.group(2)):
+            r.append((int(m.group(1), 16), int(m.group(2)), m.group(3)))
+    r.sort()
+    return r
+
+da, db = open(a, 'rb').read(), open(b, 'rb').read()
+say(f"build 1: {len(da)} bytes")
+say(f"build 2: {len(db)} bytes")
+
+if da == db:
+    say("")
+    say("IDENTICAL: this pair caught no flap. The package fails roughly half")
+    say("the time, so that is the expected outcome about half of all runs.")
+    say("Run the workflow again.")
+    open(out, "w").write("\n".join(lines) + "\n")
+    sys.exit(0)
+
+if len(da) != len(db):
+    say("")
+    say(f"the builds differ in LENGTH by {len(db) - len(da):+d} bytes, which is more")
+    say("than register-level flap; differing section sizes follow.")
+    sa = {s[0]: s for s in sections(a)}
+    sb = {s[0]: s for s in sections(b)}
+    for nm in sorted(set(sa) | set(sb)):
+        x, y = sa.get(nm), sb.get(nm)
+        if x and y and x[3] != y[3]:
+            say(f"  section {nm}: {x[3]} vs {y[3]} bytes")
+
+secs = sections(a)
+fs = funcs(a)
+starts = [f[0] for f in fs]
+
+n = min(len(da), len(db))
+diffs = [i for i in range(n) if da[i] != db[i]]
+say("")
+say(f"{len(diffs)} differing byte(s) across the first {n} shared bytes")
+
+hits, other = {}, {}
+for off in diffs:
+    sec = next((s for s in secs if s[2] <= off < s[2] + s[3]), None)
+    if not sec:
+        other["(outside any section)"] = other.get("(outside any section)", 0) + 1
+        continue
+    nm, addr, o, sz = sec
+    if nm != ".text":
+        other[nm] = other.get(nm, 0) + 1
+        continue
+    va = off - o + addr
+    i = bisect.bisect_right(starts, va) - 1
+    if i >= 0 and fs[i][0] <= va < fs[i][0] + fs[i][1]:
+        hits[fs[i][2]] = hits.get(fs[i][2], 0) + 1
     else:
-        lines.append("  no FUNC symbol encloses that address")
-        near = sorted((a,n,x) for a,n,x in
-                      [(int(m.group(1),16), int(m.group(2)), m.group(3))
-                       for m in (re.match(r'\s*\d+:\s+([0-9a-f]+)\s+(\d+)\s+FUNC\s+\S+\s+\S+\s+\S+\s+(\S+)', l)
-                                 for l in subprocess.run(["readelf","-sW",elf],capture_output=True,text=True).stdout.splitlines())
-                       if m] if a <= va)[-3:]
-        for a,n,x in near:
-            lines.append(f"    nearest below: {x} at 0x{a:x} (+{va-a})")
-open(out,"a").write("\n".join(lines) + "\n")
-print("\n".join(lines))
+        other[".text (no enclosing FUNC)"] = other.get(".text (no enclosing FUNC)", 0) + 1
+
+if other:
+    say("")
+    say("outside .text functions:")
+    for k, v in sorted(other.items(), key=lambda kv: -kv[1]):
+        say(f"  {v:6d}  {k}")
+
+say("")
+if hits:
+    say(f"FUNCTIONS THAT DIFFER ({len(hits)}):")
+    for nm, cnt in sorted(hits.items(), key=lambda kv: -kv[1]):
+        # Rust v0 mangling puts the defining crate after an Nt...Cs<hash>_
+        # marker as <len><name>. Best effort only: the label is a hint for a
+        # human, and the full symbol is printed beside it either way.
+        m = re.search(r'Cs[A-Za-z0-9]+_(\d+)([A-Za-z0-9_]+)', nm)
+        tag = ""
+        if m:
+            tag = f"   [crate: {m.group(2)[:int(m.group(1))]}]"
+        say(f"  {cnt:6d} byte(s)  {nm}{tag}")
+else:
+    say("no differing byte fell inside a named .text function")
+
+open(out, "w").write("\n".join(lines) + "\n")
 PY
 
-echo "wrote $DIAG_OUTDIR/report.txt, symbols.txt and the unstripped binary" >&2
+echo "wrote $DIAG_OUTDIR/report.txt, symbols.txt and both binaries" >&2

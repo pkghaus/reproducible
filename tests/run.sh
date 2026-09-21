@@ -43,7 +43,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=151
+EXPECTED_ASSERTIONS=152
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -938,7 +938,7 @@ echo "the diagnostic names a symbol without changing what it measures"
     # diagnose.sh rather than copied here, so a change to the real regex is
     # what this exercises.
     edit="$(mktemp)"
-    awk '/^python3 - "\$work\/\$name" <<.PY.$/{f=1;next} f&&/^PY$/{exit} f' "$dg" > "$edit"
+    awk '/^python3 - "\$inputs\/\$name" <<.PY.$/{f=1;next} f&&/^PY$/{exit} f' "$dg" > "$edit"
     eq "the nostrip edit was extracted from the shipped script" "yes" \
        "$([ -s "$edit" ] && echo yes || echo no)"
 
@@ -1000,27 +1000,37 @@ BIFIX
     body="$(cat "$dg")"
     # The answer is only as good as the claim that both builds laid out .text
     # the same way, so the script has to check that rather than assume it.
+    # Two builds, diffed against each other. A single build mapped against the
+    # published one is a cross-build offset translation, and it was wrong:
+    # keeping symbols moved .text by 19,456 bytes on zola/arm64, so the
+    # offset pointed at different code.
+    eq "it builds twice" "1" \
+       "$(printf '%s\n' "$body" | grep -c '^for i in 1 2; do')"
     case "$body" in
-        *"--only-section=.text"*) ok "the offset mapping is checked against the published build" ;;
-        *) no "the offset mapping is checked against the published build" "no .text comparison" ;;
+        *"no offset has to be"*|*"cross-build offset translation"*|*"Two builds in one configuration"*)
+            ok "and says why one build against the published one is wrong" ;;
+        *) no "and says why one build against the published one is wrong" "rationale absent" ;;
     esac
-    # Magnitude, not a boolean. On a package whose codegen flaps "differs" is
-    # the expected answer and decides nothing; a few bytes at equal length
-    # means the layout held, a different length means the offset means
-    # something else over there.
+    # An identical pair is a RESULT, not a failure: this package flaps about
+    # half the time, so half of all runs legitimately catch nothing.
     case "$body" in
-        *"UNSOUND"*) ok "a moved .text length is called unsound" ;;
-        *) no "a moved .text length is called unsound" "no length check" ;;
+        *IDENTICAL*) ok "an identical pair is reported rather than failed" ;;
+        *) no "an identical pair is reported rather than failed" "no identical branch" ;;
     esac
+    # A length change is more than register flap and has to be called out, or
+    # a reader takes a section-size difference for a code difference.
     case "$body" in
-        *"DOUBTFUL"*) ok "and a large byte delta is called doubtful" ;;
-        *) no "and a large byte delta is called doubtful" "no magnitude branch" ;;
+        *"differ in LENGTH"*) ok "a length difference is distinguished from byte flap" ;;
+        *) no "a length difference is distinguished from byte flap" "no length branch" ;;
     esac
-    # The verdict has to reach the artifact, not just the log: a run's logs
-    # expire and the report is what someone reads later.
+    # The offset-to-symbol step must resolve against one of the two builds it
+    # compared, never a third binary.
+    # Double quotes with \$ rather than single quotes: a '$' inside single
+    # quotes is SC2016, and this repo's lint has no severity filter.
     case "$body" in
-        *'offset mapping: %s'*) ok "the verdict is written into the report" ;;
-        *) no "the verdict is written into the report" "report does not carry it" ;;
+        *"python3 - \"\$a\" \"\$b\""*)
+            ok "symbols are resolved from the compared builds themselves" ;;
+        *) no "symbols are resolved from the compared builds themselves" "resolves elsewhere" ;;
     esac
 
     # verify.sh assigns OUTDIR and ROOT from its own arguments before the
@@ -1036,8 +1046,9 @@ BIFIX
     # silent-failure shape: a symbol lookup on a stripped binary finds nothing
     # and would read as "no enclosing function".
     case "$body" in
-        *"still stripped"*) ok "a rebuild that is still stripped is fatal" ;;
-        *) no "a rebuild that is still stripped is fatal" "no guard found" ;;
+        *"stripped, so no symbol can be resolved"*)
+            ok "a rebuild that came back stripped is fatal" ;;
+        *) no "a rebuild that came back stripped is fatal" "no guard found" ;;
     esac
     exit $((fail > 0))
 ) || groups_failed=$((groups_failed + 1))
