@@ -356,9 +356,14 @@ function packageTable(entries) {
       `<td class="ver">${esc(e.version)}</td>` +
       `<td><div class="matrix">${cells}</div></td></tr>`;
   }).join("\n");
-  const head = SUITES.map((s) => `${s}`).join(" &middot; ");
+  // Escape the DATA, not the markup. Building the string first and passing
+  // the whole thing through esc() turned the separator into a literal
+  // "&middot;" on the page: esc() escapes the ampersand of an entity just as
+  // happily as one in a package name. It shipped that way and the assertion
+  // below now covers the whole class, not this one entity.
+  const head = SUITES.map(esc).join(" &middot; ");
   return `<div class="tablewrap"><table>
-<thead><tr><th>package</th><th>version</th><th>${esc(head)} &nbsp;(amd64, arm64)</th></tr></thead>
+<thead><tr><th>package</th><th>version</th><th>${head} &nbsp;(amd64, arm64)</th></tr></thead>
 <tbody>${body}</tbody></table></div>`;
 }
 

@@ -457,6 +457,18 @@ test("the footer names siblings by label and the apex in full", async () => {
   assert.doesNotMatch(foot, /href="https:\/\/reproducible\.pkg\.haus"/);
 });
 
+test("no HTML entity is double-escaped into visible text", async () => {
+  resetCache();
+  // esc() cannot tell the ampersand of an entity from one in a package name,
+  // so any markup built into a string BEFORE it is escaped arrives on the
+  // page as literal text. The suite separator shipped as "&middot;" that way.
+  for (const path of ["/", "/croc/", "/nosuchpackage/"]) {
+    const body = await (await get(path)).text();
+    assert.doesNotMatch(body, /&amp;(#\d+|[a-z]+);/i,
+      `${path} renders a double-escaped entity as visible text`);
+  }
+});
+
 test("the wordmark links home and spells the real hostname", () => {
   assert.equal(breadcrumb(""),
     '<a href="/">reproducible<span class="dot">.</span>pkg<span class="dot">.</span>haus</a>');
