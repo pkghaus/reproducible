@@ -43,7 +43,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=144
+EXPECTED_ASSERTIONS=147
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -969,11 +969,26 @@ BIFIX
     eq "SOURCE_DATE_EPOCH is untouched" "1" \
        "$(grep -c 'SOURCE_DATE_EPOCH="1789560674"' "$rec")"
 
+    # nostrip alone is not enough for a Rust package. zola's upstream manifest
+    # carries `[profile.release] strip = true`, so cargo strips at link time
+    # and dh_strip never sees symbols to keep -- the first diagnostic run came
+    # back stripped and said so. Both levers, or the answer is "no enclosing
+    # function" from a binary that has no symbols at all.
+    eq "the cargo strip override is added too" "1" \
+       "$(grep -c 'CARGO_PROFILE_RELEASE_STRIP="none"' "$rec")"
+    # One leading space, matching its siblings: debrebuild splits the field by
+    # line and each line on the first '=', so a line without it parses as a
+    # name that is not a variable.
+    eq "and it keeps the block's one-space continuation shape" "1" \
+       "$(grep -c '^ CARGO_PROFILE_RELEASE_STRIP=' "$rec")"
+
     # Idempotent: a second pass must not append it twice, or the record grows
     # a token per run and stops matching what it claims to replay.
     python3 "$edit" "$rec" >/dev/null 2>&1
     eq "running the edit twice adds nostrip once" "1" \
        "$(grep -o 'nostrip' "$rec" | wc -l | tr -d ' ')"
+    eq "and the cargo override once" "1" \
+       "$(grep -c 'CARGO_PROFILE_RELEASE_STRIP' "$rec")"
 
     # A record with nothing to extend must fail loudly rather than build
     # something that is silently still stripped.

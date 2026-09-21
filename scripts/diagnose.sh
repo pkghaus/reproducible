@@ -10,10 +10,16 @@
 # to nothing. zola's arm64 failure sat there for a day -- known to be a
 # register swap, in an unknown function, in an unknown crate.
 #
-# This rebuilds the same record with `nostrip` appended to the recorded
-# DEB_BUILD_OPTIONS, which leaves .symtab in place. dh_strip runs after
-# linking and does not move .text, so the offset carries over unchanged and
-# `readelf -s` answers the question. One build, not a bisect.
+# This rebuilds the same record with the two settings that keep symbols:
+# `nostrip` in DEB_BUILD_OPTIONS so dh_strip leaves them, and
+# CARGO_PROFILE_RELEASE_STRIP=none because a Rust package whose upstream
+# manifest says `[profile.release] strip = true` is stripped by cargo at link
+# time, before dh_strip can be told anything. Neither alone suffices; zola
+# needed both, and the first attempt with only nostrip came back stripped.
+#
+# Stripping removes .symtab and does not move .text, so the offset carries
+# over unchanged and `readelf -s` answers the question. One build, not a
+# bisect.
 #
 # Why editing the record is safe, and where the limits are:
 #
@@ -85,12 +91,38 @@ s = open(p, encoding="utf-8").read()
 m = re.search(r'^( DEB_BUILD_OPTIONS=")([^"]*)(")$', s, re.M)
 if not m:
     sys.exit("FATAL: the record has no DEB_BUILD_OPTIONS to extend")
-if "nostrip" in m.group(2).split():
-    print("  the record already asks for nostrip", file=sys.stderr)
-else:
+
+# nostrip stops dh_strip. On its own it is not enough for a Rust package:
+# measured 2026-09-21 against zola, whose upstream Cargo.toml carries
+# `[profile.release] strip = true`, so cargo strips at LINK time and dh_strip
+# never sees symbols to keep. The first run of this script produced a stripped
+# binary and said so, which is why the guard below exists.
+#
+# CARGO_PROFILE_RELEASE_STRIP is the override, confirmed on a throwaway crate
+# with `strip = true` in its manifest: 0 .symtab sections without it, 1 with.
+# Both are needed and in this order -- cargo has to leave the symbols in and
+# then dh_strip has to leave them alone.
+#
+# The .dsc cannot be patched instead: debrebuild verifies it against the
+# checksums in this record and refuses an edited one.
+changed = []
+if "nostrip" not in m.group(2).split():
     s = s[:m.start()] + m.group(1) + m.group(2) + " nostrip" + m.group(3) + s[m.end():]
+    changed.append(f"DEB_BUILD_OPTIONS += nostrip")
+
+if "CARGO_PROFILE_RELEASE_STRIP" not in s:
+    # Same one-leading-space shape as its siblings: debrebuild splits the
+    # field by lines and each line on the first '=', so any name works.
+    m2 = re.search(r'^( DEB_BUILD_OPTIONS="[^"]*")$', s, re.M)
+    s = s[:m2.end()] + '\n CARGO_PROFILE_RELEASE_STRIP="none"' + s[m2.end():]
+    changed.append('CARGO_PROFILE_RELEASE_STRIP="none"')
+
+if changed:
     open(p, "w", encoding="utf-8").write(s)
-    print(f"  DEB_BUILD_OPTIONS: {m.group(2)!r} -> {m.group(2) + ' nostrip'!r}", file=sys.stderr)
+    for c in changed:
+        print(f"  record: {c}", file=sys.stderr)
+else:
+    print("  the record already asks for both", file=sys.stderr)
 PY
 
 echo "rebuilding with symbols (the checksum comparison is expected to fail)" >&2
