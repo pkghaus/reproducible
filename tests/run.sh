@@ -43,7 +43,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=108
+EXPECTED_ASSERTIONS=120
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -704,6 +704,116 @@ echo "conventions that nothing else asserts"
     eq "and nothing inside them claims to be a twin" "0" \
        "$(grep -lc 'TWIN' "$ROOT/verify/rebuild.sh" "$ROOT/verify/Dockerfile" 2>/dev/null | wc -l)"
     has "while the README does say so" "byte-identical" "$(cat "$ROOT/README.md")"
+    exit $((fail > 0))
+) || groups_failed=$((groups_failed + 1))
+
+echo "a BAD is not cleared by a later non-BAD verdict"
+(
+    set +e; shopt -u inherit_errexit
+
+    sb="$ROOT/scripts/sticky-bad.py"
+    eq "sticky-bad.py exists" "yes" "$([ -f "$sb" ] && echo yes || echo no)"
+
+    # new-status prior-status same-version -> writes the pair and runs the merge.
+    # Returns the resulting status, and sets STICKY_JSON to the whole object.
+    run_sticky() { # new_status prior_status new_version prior_version [prior_extra]
+        local nd pd
+        nd="$(mktemp -d)"; pd="$(mktemp -d)"
+        mkdir -p "$nd/testing/arm64" "$pd/testing/arm64"
+        python3 - "$nd/testing/arm64/zola.json" "$1" "$3" <<'PYNEW'
+import json, sys
+json.dump({"package": "zola", "suite": "testing", "arch": "arm64",
+           "status": sys.argv[2], "version": sys.argv[3],
+           "checked_at": "2026-09-21T18:00:00Z",
+           "run": "https://example.invalid/new"},
+          open(sys.argv[1], "w"), indent=2, sort_keys=True)
+PYNEW
+        python3 - "$pd/testing/arm64/zola.json" "$2" "$4" "${5:-}" <<'PYOLD'
+import json, sys
+obj = {"package": "zola", "suite": "testing", "arch": "arm64",
+       "status": sys.argv[2], "version": sys.argv[3],
+       "checked_at": "2026-09-21T16:56:44Z",
+       "run": "https://example.invalid/old"}
+if sys.argv[4] == "flapped":
+    obj["flapped"] = True
+json.dump(obj, open(sys.argv[1], "w"), indent=2, sort_keys=True)
+PYOLD
+        python3 "$sb" "$nd" "$pd" >/dev/null 2>&1
+        STICKY_JSON="$(cat "$nd/testing/arm64/zola.json")"
+        printf '%s' "$STICKY_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])'
+        rm -rf "$nd" "$pd"
+    }
+
+    # The rule itself.
+    eq "a GOOD does not clear a BAD on the same version" \
+       "BAD" "$(run_sticky GOOD BAD 1.0-1 1.0-1)"
+    eq "an UNKWN does not clear a BAD either" \
+       "BAD" "$(run_sticky UNKWN BAD 1.0-1 1.0-1)"
+
+    # A new version is a new artifact. Without this a fixed package would stay
+    # red forever and the only way out would be editing the bucket by hand.
+    eq "a GOOD on a NEW version does clear the BAD" \
+       "GOOD" "$(run_sticky GOOD BAD 1.0-2 1.0-1)"
+
+    # Nothing else is made sticky: a GOOD must be replaceable or the page
+    # freezes at the first sweep.
+    eq "a BAD replaces a prior GOOD" \
+       "BAD" "$(run_sticky BAD GOOD 1.0-1 1.0-1)"
+    eq "a GOOD replaces a prior GOOD" \
+       "GOOD" "$(run_sticky GOOD GOOD 1.0-1 1.0-1)"
+    eq "a GOOD replaces a prior UNKWN" \
+       "GOOD" "$(run_sticky GOOD UNKWN 1.0-1 1.0-1)"
+
+    # flapped is the load-bearing bit: it separates "this package never
+    # reproduces" from "this package reproduces sometimes", which for zola is
+    # the entire finding.
+    run_sticky GOOD BAD 1.0-1 1.0-1 >/dev/null
+    case "$STICKY_JSON" in
+        *'"flapped": true'*) ok "a BAD survived by a GOOD is marked flapped" ;;
+        *) no "a BAD survived by a GOOD is marked flapped" "json was [$STICKY_JSON]" ;;
+    esac
+    case "$STICKY_JSON" in
+        *'"last_rebuild_status": "GOOD"'*) ok "and records what the later rebuild said" ;;
+        *) no "and records what the later rebuild said" "json was [$STICKY_JSON]" ;;
+    esac
+
+    # An UNKWN is not a matching rebuild, so it must NOT claim the build
+    # flapped -- that would turn a snapshot.debian.org outage into a
+    # non-determinism finding.
+    run_sticky UNKWN BAD 1.0-1 1.0-1 >/dev/null
+    case "$STICKY_JSON" in
+        *'"flapped": true'*) no "an UNKWN does not mark the BAD flapped" "json was [$STICKY_JSON]" ;;
+        *) ok "an UNKWN does not mark the BAD flapped" ;;
+    esac
+
+    # Once seen, non-determinism is not forgotten by a later repeat failure.
+    run_sticky BAD BAD 1.0-1 1.0-1 flapped >/dev/null
+    case "$STICKY_JSON" in
+        *'"flapped": true'*) ok "flapped is carried forward across a repeat BAD" ;;
+        *) no "flapped is carried forward across a repeat BAD" "json was [$STICKY_JSON]" ;;
+    esac
+
+    # publish.sh must actually call it, and BEFORE the upload -- afterwards the
+    # BAD is already gone and the merge reads what it just overwrote.
+    pub="$(cat "$ROOT/scripts/publish.sh")"
+    # Comments excluded, same idiom as apt's -force-replace check. The header
+    # comment names scripts/sticky-bad.py thirty lines above the call, so a
+    # bare head -1 measured the comment and the ordering assertion passed
+    # whatever the code did -- caught by mutating the call's position and
+    # seeing nothing fail.
+    sticky_at="$(printf '%s\n' "$pub" | grep -n 'sticky-bad.py' \
+                 | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1)"
+    # No '$' in the pattern: shellcheck reads it as a missed expansion (SC2016)
+    # and the repo's lint has no severity filter. 'sync .*VERDICT_DIR' matches
+    # the upload line only -- the prior-state sync names no VERDICT_DIR and the
+    # sticky-bad.py call has no 'sync'.
+    upload_at="$(printf '%s\n' "$pub" | grep -n 'sync .*VERDICT_DIR' | head -1 | cut -d: -f1)"
+    if [ -n "$sticky_at" ] && [ -n "$upload_at" ] && [ "$sticky_at" -lt "$upload_at" ]; then
+        ok "publish.sh runs sticky-bad.py before uploading"
+    else
+        no "publish.sh runs sticky-bad.py before uploading" \
+           "sticky at ${sticky_at:-none}, upload at ${upload_at:-none}"
+    fi
     exit $((fail > 0))
 ) || groups_failed=$((groups_failed + 1))
 

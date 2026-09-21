@@ -660,3 +660,56 @@ test("the root page explains what each word means and what it does not prove", (
   assert.match(html, /What this does not prove/);
   assert.match(html, /independent/);
 });
+
+// A BAD that a later rebuild did not reproduce is a different finding from one
+// that repeats, and the page has to say which. scripts/sticky-bad.py is what
+// keeps the BAD standing; this is the half a reader sees.
+//
+// Scoped to the TABLE, not the whole page: the legend explains the same word,
+// so a bare match against the document passes whatever the row says. That is
+// the assertion this test exists to make, so it must not be the assertion it
+// accidentally makes.
+function tableOf(html) {
+  const cut = html.indexOf('<div class="about"');
+  assert.ok(cut > 0, "renderPackage should still have an about section to cut at");
+  return html.slice(0, cut);
+}
+
+test("a flapped BAD is rendered as non-deterministic, and an ordinary one is not", () => {
+  const base = {
+    package: "zola", suite: "testing", arch: "arm64", status: "BAD",
+    version: "0.23.6-3~testing1",
+    rebuilt_sha256: "fa744fb4e24c1a9275f90435123aa92452f02cd001839b224ffee8ffe2d638da",
+    recorded_sha256: "bacef9dd4ace326f5d2b900df71982317ff8172082bb6286ac89389537ad41ab",
+  };
+
+  const plain = tableOf(renderPackage("zola", [base]));
+  assert.match(plain, /class="v bad"[^>]*>BAD</);
+  assert.doesNotMatch(plain, /non-deterministic/);
+
+  const flapped = tableOf(renderPackage("zola", [{ ...base, flapped: true }]));
+  assert.match(flapped, /non-deterministic/);
+  // Still BAD. The whole point is that the later GOOD does not take it back.
+  assert.match(flapped, /class="v bad"[^>]*>BAD</);
+  // Both checksums stay visible: on a BAD the pair IS the finding.
+  assert.match(flapped, /fa744fb4e24c1a92/);
+  assert.match(flapped, /bacef9dd4ace326f/);
+});
+
+test("a flapped GOOD does not claim non-determinism", () => {
+  // sticky-bad.py never sets flapped on a GOOD. If it somehow did, the row
+  // must not read as a failure.
+  const html = tableOf(renderPackage("croc", [{
+    package: "croc", suite: "trixie", arch: "amd64", status: "GOOD",
+    version: "11.5.3-2~haus13+1", flapped: true,
+    rebuilt_sha256: "aaaabbbbccccdddd", recorded_sha256: "aaaabbbbccccdddd",
+  }]));
+  assert.doesNotMatch(html, /non-deterministic/);
+  assert.match(html, /class="v good"[^>]*>GOOD</);
+});
+
+test("the legend explains that a BAD stays and what a new version does", () => {
+  const html = renderRoot([], { targets: {} });
+  assert.match(html, /BAD<\/span> stays once it has happened/);
+  assert.match(html, /new version starts clean/);
+});

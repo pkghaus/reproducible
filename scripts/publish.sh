@@ -12,9 +12,13 @@
 # cannot, and the split is the only thing enforcing that: the credentials here
 # have no reach into the archive at all.
 #
-# A verdict object is overwritten in place, once per (package, suite, arch).
-# Unlike a pool file there is nothing immutable about it -- it is the current
-# answer, and the previous answer is in the run that produced it.
+# A verdict object is overwritten in place, once per (package, suite, arch),
+# with ONE exception: a BAD is not cleared by a later non-BAD verdict on the
+# same version. Reproducibility is a claim over every rebuild of an immutable
+# artifact, so one failure falsifies it and a later success proves
+# non-determinism rather than repairing it. scripts/sticky-bad.py holds the
+# rule. Otherwise a verdict is the current answer and the previous one is in
+# the run that produced it.
 #
 # It also writes verdicts.json, the rolled-up index every page is rendered
 # from. The Worker used to read one R2 object per artifact: 75 of them took
@@ -85,6 +89,15 @@ fi
 
 count="$(validate_verdicts "$VERDICT_DIR")"
 
+# Prior state, fetched BEFORE the upload, so a BAD this run would have
+# replaced is still readable. sticky-bad.py rewrites this run's verdicts in
+# place where a BAD must survive; see its docstring for the rule and why an
+# overwrite would publish non-determinism as good news.
+prior_dir="$(mktemp -d)"
+trap 'rm -rf "$prior_dir"' EXIT
+aws_ s3 sync "s3://$R2_BUCKET/verify/" "$prior_dir/" --only-show-errors
+python3 "$(dirname "${BASH_SOURCE[0]}")/sticky-bad.py" "$VERDICT_DIR" "$prior_dir"
+
 printf 'uploading %s verdict(s) to s3://%s/verify/\n' "$count" "$R2_BUCKET" >&2
 aws_ s3 sync "$VERDICT_DIR/" "s3://$R2_BUCKET/verify/" \
     --content-type 'application/json' --only-show-errors
@@ -94,7 +107,7 @@ aws_ s3 sync "$VERDICT_DIR/" "s3://$R2_BUCKET/verify/" \
 # run produced.
 all_dir="$(mktemp -d)"
 rolled="$(mktemp)"
-trap 'rm -rf "$all_dir" "$rolled"' EXIT
+trap 'rm -rf "$prior_dir" "$all_dir" "$rolled"' EXIT
 aws_ s3 sync "s3://$R2_BUCKET/verify/" "$all_dir/" --only-show-errors
 python3 "$(dirname "${BASH_SOURCE[0]}")/roll-index.py" "$all_dir" "$rolled"
 aws_ s3 cp "$rolled" "s3://$R2_BUCKET/verdicts.json" \

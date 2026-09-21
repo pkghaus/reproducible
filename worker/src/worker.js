@@ -392,6 +392,11 @@ comparing the bytes.</p>
 <span class="v bad">BAD</span> the rebuild completed and the bytes differed.
 <span class="v unkwn">UNKWN</span> the rebuild could not be completed, so
 nothing is claimed either way.</p>
+<p>A <span class="v bad">BAD</span> stays once it has happened. The claim is
+about every rebuild of a file that never changes, so one differing rebuild
+settles it, and a later matching rebuild does not take it back: it means the
+build is <span class="v unkwn">non-deterministic</span>, which the row then
+says. A new version starts clean, because that is a different file.</p>
 <p><strong><span class="v unkwn">UNKWN</span> is not a soft failure.</strong> snapshot.debian.org is a
 rate-limited volunteer service that times out under load, and a build
 dependency can stop being resolvable years after the fact. Recording either as
@@ -447,11 +452,22 @@ export function renderRoot(verdicts, inventory) {
 function detailCell(v) {
   if (v.status === "UNKWN") return esc(v.unknown_reason || "no reason recorded");
   const short = (h) => esc(String(h || "").slice(0, 16));
+  // A BAD that a later rebuild did NOT reproduce says more than one that
+  // repeats: the build is non-deterministic, so neither run is the package's
+  // behaviour and both the failure and the pass are real. scripts/sticky-bad.py
+  // is what keeps the BAD standing through that later pass; without it the
+  // verdict would flip to GOOD and the finding would exist only in a CI log.
+  // Gated on BAD, not on the flag alone. sticky-bad.py only ever sets flapped
+  // on a BAD, but a GOOD row must not be able to read as a failure however the
+  // object got that way -- the renderer is the last place that can refuse.
+  const flap = (v.status === "BAD" && v.flapped)
+    ? ` <span class="v unkwn">non-deterministic</span>`
+    : "";
   if (v.status === "BAD" && v.rebuilt_sha256 && v.recorded_sha256) {
     return `<code>${short(v.rebuilt_sha256)}</code> != `
-      + `<code>${short(v.recorded_sha256)}</code>`;
+      + `<code>${short(v.recorded_sha256)}</code>${flap}`;
   }
-  return `<code>${short(v.rebuilt_sha256 || v.recorded_sha256)}</code>`;
+  return `<code>${short(v.rebuilt_sha256 || v.recorded_sha256)}</code>${flap}`;
 }
 
 export function renderPackage(name, verdicts) {
