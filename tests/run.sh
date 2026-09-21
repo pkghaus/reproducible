@@ -43,7 +43,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=103
+EXPECTED_ASSERTIONS=108
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -617,6 +617,41 @@ PYEOF
     both="$(rt w '["a/*","c/*"]' '[{"pattern":"a/*","script":"w"},{"pattern":"b/*","script":"w"}]')"
     has "both directions are reported: missing" "declared but not live" "$both"
     has "both directions are reported: undeclared" "absent from" "$both"
+    exit $((fail > 0))
+) || groups_failed=$((groups_failed + 1))
+
+echo
+echo "the rolled-up index"
+(
+    set +e; shopt -u inherit_errexit
+    W="$WORK/roll"; rm -rf "$W"; mkdir -p "$W/trixie/amd64" "$W/unstable/arm64"
+    printf '{"package":"croc","status":"GOOD","suite":"trixie","arch":"amd64"}' > "$W/trixie/amd64/croc.json"
+    printf '{"package":"zola","status":"BAD","suite":"unstable","arch":"arm64"}'  > "$W/unstable/arm64/zola.json"
+
+    "$ROOT/scripts/roll-index.py" "$W" "$WORK/idx.json" 2>/dev/null
+    eq "it rolls every verdict in the tree" "2" \
+       "$(python3 -c "import json;print(len(json.load(open('$WORK/idx.json'))['verdicts']))")"
+    eq "and stamps when" "yes" \
+       "$(python3 -c "
+import json,re
+d=json.load(open('$WORK/idx.json'))
+print('yes' if re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', d['generated_at']) else 'no')")"
+
+    # A half-written object must not take the whole index down with it, and
+    # must not appear in it either.
+    printf '{"package":' > "$W/trixie/amd64/broken.json"
+    "$ROOT/scripts/roll-index.py" "$W" "$WORK/idx2.json" 2>/dev/null
+    eq "one unparseable verdict is dropped, the rest survive" "2" \
+       "$(python3 -c "import json;print(len(json.load(open('$WORK/idx2.json'))['verdicts']))")"
+
+    # An index built from nothing renders the page as a fleet where nothing
+    # has been verified - the one false negative this surface must not emit.
+    rm -rf "$W"; mkdir -p "$W"
+    if "$ROOT/scripts/roll-index.py" "$W" "$WORK/idx3.json" >/dev/null 2>&1
+    then empty=no; else empty=yes; fi
+    eq "an empty tree is refused" "yes" "$empty"
+    eq "  and it wrote no index to serve" "no" \
+       "$([ -s "$WORK/idx3.json" ] && echo yes || echo no)"
     exit $((fail > 0))
 ) || groups_failed=$((groups_failed + 1))
 

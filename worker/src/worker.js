@@ -36,6 +36,7 @@ const JSON_MAX_AGE = 300;
 // reproducible.archlinux.org and reproduce.debian.net.
 const STATUSES = ["GOOD", "BAD", "UNKWN"];
 const INVENTORY_KEY = "inventory.json";
+const INDEX_KEY = "verdicts.json";
 
 function esc(s) {
   return String(s).replace(/[&<>"]/g, (c) =>
@@ -595,11 +596,37 @@ export default {
   },
 };
 
-// Every verdict in the bucket, newest-wins per artifact. Small enough to read
-// whole: one object per published artifact, a few hundred bytes each, and the
-// fleet is in the low hundreds. If that stops being true the answer is a
-// rolled-up index object written by the verifier, not pagination here.
+// Every verdict, from the rolled-up index the verifier writes.
+//
+// This used to read one R2 object per artifact and the comment here said the
+// fleet was "small enough to read whole". It was not: 75 verdicts took 5.6 to
+// 8.1 seconds on a cache miss, measured 2026-09-21, and 216 would have been
+// three times that. Binding reads are capped per invocation on the free plan
+// too, and a render was already making about eighty of them.
+//
+// scripts/roll-index.py builds verdicts.json from the whole bucket at every
+// publish. The per-artifact objects are untouched: they are the documented
+// machine-readable endpoint and this is a derived view of them.
 export async function loadVerdicts(bucket) {
+  const index = await bucket.get(INDEX_KEY);
+  if (index) {
+    try {
+      const parsed = JSON.parse(await index.text());
+      if (Array.isArray(parsed.verdicts)) return parsed.verdicts;
+      console.error(`${INDEX_KEY} has no verdicts array`);
+    } catch (e) {
+      console.error(`${INDEX_KEY} will not parse:`, e?.message ?? e);
+    }
+  }
+  // Fall back to the per-artifact scan. Slow, and that is the point: the page
+  // stays CORRECT when the index is missing or broken, rather than rendering
+  // a fleet where nothing has been verified, which is the one failure this
+  // surface must never produce. The log line is how anyone finds out.
+  console.error(`${INDEX_KEY} unusable; falling back to the per-object scan`);
+  return scanVerdicts(bucket);
+}
+
+export async function scanVerdicts(bucket) {
   const { objects } = await listAll(bucket, PREFIX);
   const out = [];
   for (const o of objects) {
@@ -695,7 +722,7 @@ async function serve(request, env, ctx, path) {
 
   // The raw verdict, for anyone who would rather read the data than the page.
   // A machine endpoint, so no Plausible and no HTML CSP.
-  if (path === `/${INVENTORY_KEY}`
+  if (path === `/${INVENTORY_KEY}` || path === `/${INDEX_KEY}`
       || (path.startsWith(`/${PREFIX}`) && path.endsWith(".json"))) {
     const key = path.slice(1);
     let object;

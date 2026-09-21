@@ -21,7 +21,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import worker, {
   baseVersion, byPackage, inventoryHas, inventoryPackages, listAll,
-  loadInventory, loadVerdicts, publishedFor, renderPackage, renderRoot,
+  loadInventory, loadVerdicts, publishedFor, renderPackage, renderRoot, scanVerdicts,
   resolveRange, summarise, totals, verdictClass, breadcrumb,
 } from "../src/worker.js";
 
@@ -121,6 +121,24 @@ const FIXTURE = {
   "verify/unstable/amd64/broken.json": '{"package":',
   // Not a verdict. Nothing should serve or count it.
   "verify/notes.txt": "ignored",
+  "verdicts.json": JSON.stringify({
+    generated_at: "2026-09-21T00:00:00Z",
+    verdicts: [
+      JSON.parse(verdict({})),
+      JSON.parse(verdict({ arch: "arm64" })),
+      JSON.parse(verdict({ suite: "trixie", version: "11.5.3-2~haus13+1" })),
+      JSON.parse(verdict({
+        package: "zola", version: "0.23.6-3", status: "BAD",
+        debrebuild: "value of sha256 differs for zola_0.23.6-3_amd64.deb",
+        rebuilt_sha256: "b".repeat(64), recorded_sha256: "c".repeat(64),
+      })),
+      JSON.parse(verdict({
+        package: "zola", version: "0.23.6-3", arch: "arm64", status: "UNKWN",
+        debrebuild: null, unknown_reason: "snapshot.debian.org timed out",
+        rebuilt_sha256: null, recorded_sha256: null,
+      })),
+    ],
+  }),
   "inventory.json": JSON.stringify({
     generated_at: "2026-09-21T00:00:00Z",
     archive: "https://apt.pkg.haus",
@@ -286,9 +304,41 @@ test("listAll follows the cursor rather than stopping at one page", async () => 
 });
 
 test("a verdict that will not parse is dropped, not rendered half-read", async () => {
-  const loaded = await loadVerdicts(env.VERDICTS);
+  const loaded = await scanVerdicts(env.VERDICTS);
   assert.equal(loaded.length, 5);
   assert.equal(loaded.filter((v) => v.package === undefined).length, 0);
+});
+
+test("a page is rendered from one read, not one per artifact", async () => {
+  // 75 per-artifact reads took 5.6-8.1s on a cache miss and the fleet is 216.
+  // Binding reads are capped per invocation too. This is the assertion that
+  // keeps the render cheap: the count must not grow with the fleet.
+  resetCache();
+  await get("/");
+  await settle();
+  assert.deepEqual(reads.sort(), ["inventory.json", "verdicts.json"]);
+});
+
+test("a broken index falls back rather than rendering nothing verified", async () => {
+  // The one failure this surface must never produce is an empty page that
+  // looks like a fleet nobody has checked. Slow and correct beats fast and
+  // silent.
+  for (const broken of ["{oops", JSON.stringify({ generated_at: "x" })]) {
+    const bucket = fakeBucket({ ...FIXTURE, "verdicts.json": broken });
+    const loaded = await loadVerdicts(bucket);
+    assert.equal(loaded.length, 5, `fell back for ${broken.slice(0, 12)}`);
+  }
+  // Absent entirely, same.
+  const { "verdicts.json": _drop, ...without } = FIXTURE;
+  assert.equal((await loadVerdicts(fakeBucket(without))).length, 5);
+});
+
+test("the index is served as a machine endpoint beside the inventory", async () => {
+  resetCache();
+  const r = await get("/verdicts.json");
+  assert.equal(r.status, 200);
+  assert.equal(r.headers.get("content-type"), "application/json; charset=utf-8");
+  assert.equal(JSON.parse(await r.text()).verdicts.length, 5);
 });
 
 test("the inventory is outside verify/, so the reader cannot mistake it for one", async () => {

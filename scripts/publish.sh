@@ -16,6 +16,17 @@
 # Unlike a pool file there is nothing immutable about it -- it is the current
 # answer, and the previous answer is in the run that produced it.
 #
+# It also writes verdicts.json, the rolled-up index every page is rendered
+# from. The Worker used to read one R2 object per artifact: 75 of them took
+# 5.6 to 8.1 seconds on a cache miss, measured 2026-09-21, and 216 would have
+# been three times that. Binding reads are also capped per invocation on the
+# free plan, and a render was already making about eighty. One object fixes
+# both, and the per-artifact files stay exactly where they are because they
+# are the documented machine-readable endpoint.
+#
+# The index is built from the WHOLE bucket, not from this run's verdicts: a
+# run verifies a handful per leg and the page has to show all of them.
+#
 # No cache purge afterwards. The Worker serves pages and verdicts with
 # max-age=300, so an edge holds a stale page for at most five minutes, and a
 # verification wave takes longer than that to finish anyway.
@@ -76,6 +87,17 @@ count="$(validate_verdicts "$VERDICT_DIR")"
 
 printf 'uploading %s verdict(s) to s3://%s/verify/\n' "$count" "$R2_BUCKET" >&2
 aws_ s3 sync "$VERDICT_DIR/" "s3://$R2_BUCKET/verify/" \
+    --content-type 'application/json' --only-show-errors
+
+# Everything now in the bucket, this run's uploads included, as one object.
+# Synced down rather than merged from $VERDICT_DIR, which holds only what this
+# run produced.
+all_dir="$(mktemp -d)"
+rolled="$(mktemp)"
+trap 'rm -rf "$all_dir" "$rolled"' EXIT
+aws_ s3 sync "s3://$R2_BUCKET/verify/" "$all_dir/" --only-show-errors
+python3 "$(dirname "${BASH_SOURCE[0]}")/roll-index.py" "$all_dir" "$rolled"
+aws_ s3 cp "$rolled" "s3://$R2_BUCKET/verdicts.json" \
     --content-type 'application/json' --only-show-errors
 
 if [ -n "$INVENTORY" ]; then
