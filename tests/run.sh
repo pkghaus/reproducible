@@ -43,7 +43,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=120
+EXPECTED_ASSERTIONS=131
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -503,7 +503,8 @@ echo "verify: the verdict object is what the worker reads"
     out="$WORK/v.json"
     VERIFY_RUN_URL="https://example.invalid/run/1" \
     emit_verdict "$out" croc 11.5.3-2 unstable amd64 GOOD \
-        https://buildinfos.pkg.haus/x.buildinfo 'all OK' '' deadbeef deadbeef
+        https://buildinfos.pkg.haus/x.buildinfo 'all OK' '' deadbeef deadbeef \
+        4096 4096
     read_json() { python3 -c "
 import json
 v=json.load(open('$out'))
@@ -512,7 +513,7 @@ $1"; }
     # Every field the Worker reads. A renamed key here renders an empty cell
     # rather than an error, which is the failure mode that survives review.
     eq "the worker's fields are all present" \
-       "arch buildinfo checked_at debrebuild package rebuilt_sha256 recorded_sha256 run status suite unknown_reason version" \
+       "arch buildinfo checked_at debrebuild package rebuilt_sha256 rebuilt_size recorded_sha256 recorded_size run status suite unknown_reason version" \
        "$(read_json 'print(" ".join(sorted(v)))')"
     eq "the timestamp carries seconds and a zone" "yes" \
        "$(read_json '
@@ -524,7 +525,7 @@ print("yes" if re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", v["checked_
        "$(read_json 'print(v["run"])')"
 
     VERIFY_RUN_URL="" emit_verdict "$out" croc 11.5.3-2 unstable amd64 UNKWN \
-        https://x/y '' 'snapshot.debian.org timed out' '' ''
+        https://x/y '' 'snapshot.debian.org timed out' '' '' '' ''
     eq "an unset run url is null rather than empty" "None" "$(read_json 'print(v["run"])')"
     eq "and the reason survives" "snapshot.debian.org timed out" \
        "$(read_json 'print(v["unknown_reason"])')"
@@ -704,6 +705,115 @@ echo "conventions that nothing else asserts"
     eq "and nothing inside them claims to be a twin" "0" \
        "$(grep -lc 'TWIN' "$ROOT/verify/rebuild.sh" "$ROOT/verify/Dockerfile" 2>/dev/null | wc -l)"
     has "while the README does say so" "byte-identical" "$(cat "$ROOT/README.md")"
+    exit $((fail > 0))
+) || groups_failed=$((groups_failed + 1))
+
+echo "a BAD carries the evidence needed to diagnose it"
+(
+    # shellcheck source=scripts/verify.sh
+    . "$ROOT/scripts/verify.sh" x x x x
+    set +e; shopt -u inherit_errexit
+
+    # A real record's shape, clearsigned like every one published since
+    # 2026-09-12. Field 2 is the size; this is the line zola's own arm64
+    # record carries.
+    rec="$(mktemp)"
+    cat > "$rec" <<'BIFIX'
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Format: 1.0
+Checksums-Sha256:
+ b96e8d26ef3fea7c35b442dbcd9e4e28bc16ae84c21fc03231fb10db7336c381 1143 zola_0.23.6-3.dsc
+ 5ced33258b9f1a51517e4eb1dcc4cd3a9e671b290e85621c11a8b0b0ae947d74 10569132 zola_0.23.6-3_arm64.deb
+Build-Path: /build
+BIFIX
+
+    eq "size_of reads the recorded size" \
+       "10569132" "$(size_of "$rec" zola_0.23.6-3_arm64.deb)"
+    eq "size_of and checksum_of read the same line" \
+       "5ced33258b9f1a51517e4eb1dcc4cd3a9e671b290e85621c11a8b0b0ae947d74" \
+       "$(checksum_of "$rec" zola_0.23.6-3_arm64.deb)"
+    eq "size_of on the .dsc, not just the .deb" \
+       "1143" "$(size_of "$rec" zola_0.23.6-3.dsc)"
+    # A name not in the block yields nothing rather than the wrong file's size.
+    eq "size_of refuses a name the record does not carry" \
+       "" "$(size_of "$rec" nosuch_1.0_amd64.deb)"
+    # The block ends at the first unindented line; Build-Path must not be read
+    # as a checksum row.
+    eq "size_of stops at the end of the block" \
+       "" "$(size_of "$rec" Build-Path:)"
+
+    # The verdict carries both sizes, as integers rather than strings, so a
+    # consumer can subtract them without parsing.
+    out="$(mktemp)"
+    emit_verdict "$out" zola 0.23.6-3 unstable arm64 BAD \
+        https://example.invalid/z.buildinfo "size differs for z.deb" "" \
+        a4b9001e 5ced3325 10569260 10569132
+    python3 - "$out" <<'PYV'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["rebuilt_size"] == 10569260, d
+assert d["recorded_size"] == 10569132, d
+assert isinstance(d["rebuilt_size"], int), type(d["rebuilt_size"])
+PYV
+    eq "the verdict carries both sizes as integers" "0" "$?"
+
+    # Absent sizes stay null. Every verdict written before these fields
+    # existed has none, and a "" would become 0 and render as a real delta.
+    emit_verdict "$out" zola 0.23.6-3 unstable arm64 UNKWN \
+        https://example.invalid/z.buildinfo "" "no record" "" "" "" ""
+    python3 - "$out" <<'PYN'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["rebuilt_size"] is None and d["recorded_size"] is None, d
+PYN
+    eq "absent sizes are null, not zero" "0" "$?"
+    rm -f "$rec" "$out"
+    exit $((fail > 0))
+) || groups_failed=$((groups_failed + 1))
+
+echo "only a BAD keeps its rebuilt artifact"
+(
+    set +e; shopt -u inherit_errexit
+    vs="$(cat "$ROOT/scripts/verify.sh")"
+
+    # The copy must be gated on the verdict. Keeping a GOOD would upload a
+    # byte-identical copy of a file the archive already serves, on every run.
+    # No '$' in the pattern: shellcheck reads it as a missed expansion
+    # (SC2016) and this repo's lint has no severity filter.
+    cp_at="$(printf '%s\n' "$vs" | grep -n 'cp .*built.*EVIDENCE' | head -1 | cut -d: -f1)"
+    gate_at="$(printf '%s\n' "$vs" | grep -n 'verdict" = BAD' \
+               | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1)"
+    if [ -n "$cp_at" ] && [ -n "$gate_at" ] && [ "$gate_at" -lt "$cp_at" ]; then
+        ok "the rebuilt artifact is copied only under a BAD gate"
+    else
+        no "the rebuilt artifact is copied only under a BAD gate" \
+           "gate at ${gate_at:-none}, cp at ${cp_at:-none}"
+    fi
+
+    # And the workflow has to collect it, or the copy dies with the runner.
+    wf="$(cat "$ROOT/.github/workflows/verify.yml")"
+    case "$wf" in
+        *"path: evidence/"*) ok "the workflow uploads the evidence directory" ;;
+        *) no "the workflow uploads the evidence directory" "no evidence path in verify.yml" ;;
+    esac
+    # ignore, not error: most legs produce no BAD and an absent directory is
+    # the healthy case here, unlike the verdicts upload beside it.
+    ev="$(printf '%s\n' "$wf" | sed -n '/name: evidence-/,/if-no-files-found/p')"
+    case "$ev" in
+        *"if-no-files-found: ignore"*) ok "an empty evidence directory is not a failure" ;;
+        *) no "an empty evidence directory is not a failure" "block was [$ev]" ;;
+    esac
+    # The verdicts upload must still be strict; a blanket relaxation would
+    # undo the assertion that a leg which planned work produced some.
+    # Scoped to the verdicts upload. verify.yml has two strict uploads, plan
+    # and verdicts, so a bare count read 2 and said nothing about which.
+    vb="$(printf '%s\n' "$wf" | sed -n '/name: verdicts-/,/if-no-files-found/p')"
+    case "$vb" in
+        *"if-no-files-found: error"*) ok "the verdicts upload still errors on empty" ;;
+        *) no "the verdicts upload still errors on empty" "block was [$vb]" ;;
+    esac
     exit $((fail > 0))
 ) || groups_failed=$((groups_failed + 1))
 

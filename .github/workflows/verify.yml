@@ -180,6 +180,25 @@ jobs:
           # reason, and verify.sh refuses that case itself.
           if-no-files-found: error
 
+      # The rebuilt .deb behind a BAD, and only a BAD. A verdict says the
+      # bytes differed; it cannot say how, and the work directory is gone
+      # the moment the next package starts. The published original stays
+      # fetchable forever, so the half worth keeping is the one that
+      # evaporates -- with both, diffoscope runs later at full strength on
+      # a machine of the right architecture, which is exactly what zola's
+      # arm64 failure needed and nobody had.
+      - name: Keep the evidence behind any BAD
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: evidence-${{ matrix.leg.suite }}-${{ matrix.leg.arch }}
+          path: evidence/
+          # `ignore`, and this is the one place in this repo where an empty
+          # result is genuinely a pass: most legs produce no BAD, so the
+          # directory is absent on a healthy run. The assertion that work
+          # happened lives on the verdicts upload above, which still errors.
+          if-no-files-found: ignore
+
   publish:
     needs: [plan, verify]
     # `always()` so a leg that failed does not throw away the five that did

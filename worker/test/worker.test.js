@@ -22,6 +22,7 @@ import assert from "node:assert/strict";
 import worker, {
   baseVersion, byPackage, inventoryHas, inventoryPackages, listAll,
   loadInventory, loadVerdicts, publishedFor, renderPackage, renderRoot, scanVerdicts,
+  sizeDelta,
   resolveRange, summarise, totals, verdictClass, breadcrumb,
 } from "../src/worker.js";
 
@@ -712,4 +713,37 @@ test("the legend explains that a BAD stays and what a new version does", () => {
   const html = renderRoot([], { targets: {} });
   assert.match(html, /BAD<\/span> stays once it has happened/);
   assert.match(html, /new version starts clean/);
+});
+
+// "size differs" is debrebuild's commonest BAD wording and it prints neither
+// number. The delta is the thing a reader can act on: 128 bytes reads as
+// codegen, megabytes as a missing file.
+test("sizeDelta is signed, and empty whenever it would be meaningless", () => {
+  assert.equal(sizeDelta({ rebuilt_size: 10569260, recorded_size: 10569132 }), 
+    ' <span class="v none">+128 B</span>');
+  assert.match(sizeDelta({ rebuilt_size: 10569000, recorded_size: 10569132 }), /\u2212132 B/);
+  // Equal, missing, and null all render as nothing. Verdicts written before
+  // these fields existed carry neither, and must not produce "NaN B".
+  assert.equal(sizeDelta({ rebuilt_size: 5, recorded_size: 5 }), "");
+  assert.equal(sizeDelta({}), "");
+  assert.equal(sizeDelta({ rebuilt_size: null, recorded_size: 10 }), "");
+  assert.equal(sizeDelta({ rebuilt_size: 10, recorded_size: null }), "");
+});
+
+test("a BAD row shows the size delta; a GOOD row does not", () => {
+  const bad = renderPackage("zola", [{
+    package: "zola", suite: "unstable", arch: "arm64", status: "BAD",
+    version: "0.23.6-3",
+    rebuilt_sha256: "a4b9001e5625869b", recorded_sha256: "5ced33258b9f1a51",
+    rebuilt_size: 10569260, recorded_size: 10569132,
+  }]);
+  assert.match(bad.slice(0, bad.indexOf('<div class="about"')), /\+128 B/);
+
+  const good = renderPackage("croc", [{
+    package: "croc", suite: "trixie", arch: "amd64", status: "GOOD",
+    version: "11.5.3-2~haus13+1",
+    rebuilt_sha256: "aaaabbbbccccdddd", recorded_sha256: "aaaabbbbccccdddd",
+    rebuilt_size: 100, recorded_size: 100,
+  }]);
+  assert.doesNotMatch(good.slice(0, good.indexOf('<div class="about"')), / B<\/span>/);
 });

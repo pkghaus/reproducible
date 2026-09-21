@@ -43,6 +43,14 @@ SUITE="${2:?usage: $0 <plan.json> <suite> <build-arch> <outdir>}"
 BUILD_ARCH="${3:?usage: $0 <plan.json> <suite> <build-arch> <outdir>}"
 OUTDIR="${4:?usage: $0 <plan.json> <suite> <build-arch> <outdir>}"
 
+# Where a BAD's rebuilt .deb is kept. The RECORDED half is public and
+# permanent -- anyone can fetch it from the archive -- so the half worth
+# saving is the one that otherwise evaporates with the work directory. With
+# it and the published original, diffoscope can be run later at full strength
+# on a machine of the right architecture, which is what zola's arm64 failure
+# needed and could not have.
+EVIDENCE="${EVIDENCE:-evidence}"
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UA="${PKGHAUS_UA:-curl pkghaus-ci}"
 # An hour per artifact. A Rust rebuild of the larger packages runs to tens of
@@ -74,6 +82,20 @@ checksum_of() { # file name
     awk -v want="$2" '
         /^Checksums-Sha256:/ { inblock = 1; next }
         inblock && /^ / { if ($3 == want) { print $1; exit }; next }
+        inblock { exit }
+    ' "$1"
+}
+
+# And its recorded size. Field 2 of the same line, verified against a real
+# record rather than the spec: zola_0.23.6-3_arm64.buildinfo carries
+# "<sha256> 10569132 zola_0.23.6-3_arm64.deb". Free, because the record is
+# already fetched -- which matters, since the recorded .deb itself is not
+# downloaded and fetching one only to size it would be a real cost on a host
+# whose downloads are counted.
+size_of() { # file name
+    awk -v want="$2" '
+        /^Checksums-Sha256:/ { inblock = 1; next }
+        inblock && /^ / { if ($3 == want) { print $2; exit }; next }
         inblock { exit }
     ' "$1"
 }
@@ -126,11 +148,11 @@ summarise_log() { # verdict log
     esac
 }
 
-emit_verdict() { # outfile package version suite arch verdict buildinfo summary reason rebuilt recorded
+emit_verdict() { # outfile package version suite arch verdict buildinfo summary reason rebuilt recorded rebuilt_size recorded_size
     python3 - "$@" <<'PY'
 import datetime, json, os, sys
 (out, package, version, suite, arch, status, buildinfo,
- summary, reason, rebuilt, recorded) = sys.argv[1:12]
+ summary, reason, rebuilt, recorded, rebuilt_size, recorded_size) = sys.argv[1:14]
 with open(out, "w", encoding="utf-8") as handle:
     json.dump({
         "package": package,
@@ -145,6 +167,12 @@ with open(out, "w", encoding="utf-8") as handle:
         "unknown_reason": reason or None,
         "rebuilt_sha256": rebuilt or None,
         "recorded_sha256": recorded or None,
+        # "size differs" is debrebuild's commonest BAD wording and it prints
+        # neither size. Both are free here -- one from the record, one from
+        # the file on disk -- and the pair is the first thing anyone
+        # diagnosing a BAD wants.
+        "rebuilt_size": int(rebuilt_size) if rebuilt_size else None,
+        "recorded_size": int(recorded_size) if recorded_size else None,
         "run": os.environ.get("VERIFY_RUN_URL") or None,
     }, handle, indent=2, sort_keys=True)
 PY
@@ -187,6 +215,7 @@ while IFS=$'\t' read -r package version buildinfo targets; do
     log="$work/rebuild.log"
     : > "$log"
     verdict=""; summary=""; reason=""; rebuilt=""; recorded=""
+    rebuilt_size=""; recorded_size=""
     base="${buildinfo%/*}"
     name="${buildinfo##*/}"
 
@@ -206,6 +235,7 @@ while IFS=$'\t' read -r package version buildinfo targets; do
         # its binary _all.deb, so composing the name from the two would miss.
         if [ -n "$deb" ]; then
             recorded="$(checksum_of "$work/$name" "$deb")"
+            recorded_size="$(size_of "$work/$name" "$deb")"
         fi
         if [ -z "$dsc" ]; then
             verdict=UNKWN
@@ -242,6 +272,18 @@ while IFS=$'\t' read -r package version buildinfo targets; do
             built="$(find "$work/rebuilt" -maxdepth 1 -name '*.deb' -print -quit 2>/dev/null || true)"
             if [ -n "$built" ]; then
                 rebuilt="$(sha256sum "$built" | cut -d' ' -f1)"
+                rebuilt_size="$(stat -c %s "$built")"
+                # Only on BAD. A GOOD rebuild is byte-identical to a file the
+                # archive already serves, so keeping it would upload a copy of
+                # something public on every run; an UNKWN has nothing to
+                # compare. BAD is rare by construction -- two of 216 on the
+                # first full sweep -- so this costs nothing until it matters.
+                if [ "$verdict" = BAD ]; then
+                    mkdir -p "$EVIDENCE/$SUITE/$BUILD_ARCH"
+                    cp "$built" "$EVIDENCE/$SUITE/$BUILD_ARCH/"
+                    printf 'kept the rebuilt %s for diffing against the published one\n' \
+                        "${built##*/}" >&2
+                fi
             fi
         fi
         tail -30 "$log" >&2
@@ -256,7 +298,8 @@ while IFS=$'\t' read -r package version buildinfo targets; do
         mkdir -p "$OUTDIR/$target"
         emit_verdict "$OUTDIR/$target/$package.json" \
             "$package" "$version" "${target%/*}" "${target#*/}" \
-            "$verdict" "$buildinfo" "$summary" "$reason" "$rebuilt" "$recorded"
+            "$verdict" "$buildinfo" "$summary" "$reason" "$rebuilt" "$recorded" \
+            "$rebuilt_size" "$recorded_size"
         written=$((written + 1))
     done
 done <<< "$items"

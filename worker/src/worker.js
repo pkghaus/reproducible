@@ -449,6 +449,17 @@ export function renderRoot(verdicts, inventory) {
 // showing only the rebuilt half would make a reader fetch the record to learn
 // what it should have been; on UNKWN there is no checksum to show and the
 // reason is the only thing that helps.
+// Signed, with a thin space before the unit, or "" when either size is
+// missing or they agree. Older verdicts predate the fields entirely, so the
+// absent case is normal and must render as nothing rather than as "NaN".
+export function sizeDelta(v) {
+  const a = v.rebuilt_size;
+  const b = v.recorded_size;
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) return "";
+  const d = a - b;
+  return ` <span class="v none">${d > 0 ? "+" : "\u2212"}${Math.abs(d)} B</span>`;
+}
+
 function detailCell(v) {
   if (v.status === "UNKWN") return esc(v.unknown_reason || "no reason recorded");
   const short = (h) => esc(String(h || "").slice(0, 16));
@@ -464,8 +475,13 @@ function detailCell(v) {
     ? ` <span class="v unkwn">non-deterministic</span>`
     : "";
   if (v.status === "BAD" && v.rebuilt_sha256 && v.recorded_sha256) {
+    // The size delta, when both are known and differ. debrebuild's commonest
+    // BAD wording is "size differs" and it prints neither number, so without
+    // this a reader learns only that something changed. The delta is shown
+    // rather than the pair because it is the diagnostic signal and the column
+    // is narrow: 128 bytes reads as codegen, megabytes as a missing file.
     return `<code>${short(v.rebuilt_sha256)}</code> != `
-      + `<code>${short(v.recorded_sha256)}</code>${flap}`;
+      + `<code>${short(v.recorded_sha256)}</code>${sizeDelta(v)}${flap}`;
   }
   return `<code>${short(v.rebuilt_sha256 || v.recorded_sha256)}</code>${flap}`;
 }
