@@ -43,7 +43,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=90
+EXPECTED_ASSERTIONS=103
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -556,6 +556,67 @@ echo "publish: what it refuses to upload"
     printf '{"package":' > "$WORK/pub/unstable/amd64/zola.json"
     eq "one unparseable verdict fails the whole upload" "1" \
        "$(validate_verdicts "$WORK/pub" >/dev/null 2>&1; echo $?)"
+    exit $((fail > 0))
+) || groups_failed=$((groups_failed + 1))
+
+echo
+echo "deploy-time route assertion"
+(
+    # check-routes.py is copied verbatim into six repos and its tests live
+    # here. The comparison is a pure function precisely so this needs no
+    # network, no token and no zone.
+    rt() { # script declared-json routes-json
+        python3 - "$1" "$2" "$3" <<'PYEOF'
+import json, sys, importlib.util, pathlib
+spec = importlib.util.spec_from_file_location(
+    "cr", pathlib.Path(__file__).parent if False else "scripts/check-routes.py")
+cr = importlib.util.module_from_spec(spec); spec.loader.exec_module(cr)
+out = cr.problems(sys.argv[1], "wrangler.toml",
+                  set(json.loads(sys.argv[2])), json.loads(sys.argv[3]))
+print("\n".join(out) if out else "OK")
+PYEOF
+    }
+    live() { printf '[{"pattern":"a/*","script":"w","request_limit_fail_open":false}]'; }
+
+    eq "declared and live agree" "OK" "$(rt w '["a/*"]' "$(live)")"
+
+    # The direction that nobody notices: a route added by hand keeps working,
+    # so nothing complains and the config quietly stops describing production.
+    # This is the pkg.haus/zk/* case, reproduced.
+    has "a live route missing from the config fails" "absent from" \
+        "$(rt w '["a/*"]' '[{"pattern":"a/*","script":"w"},{"pattern":"b/*","script":"w"}]')"
+    has "  and it names the route" "b/*" \
+        "$(rt w '["a/*"]' '[{"pattern":"a/*","script":"w"},{"pattern":"b/*","script":"w"}]')"
+    has "  and says to add it, not delete it" "do not delete" \
+        "$(rt w '["a/*"]' '[{"pattern":"a/*","script":"w"},{"pattern":"b/*","script":"w"}]')"
+
+    has "a declared route that did not deploy fails" "declared but not live" \
+        "$(rt w '["a/*","c/*"]' "$(live)")"
+
+    # There is no wrangler field for fail-open, so a route created after the
+    # 2026-09-04 sweep starts at whatever Cloudflare defaults to.
+    has "fail-open ON fails" "fail-open is ON" \
+        "$(rt w '["a/*"]' '[{"pattern":"a/*","script":"w","request_limit_fail_open":true}]')"
+    has "  and names the route" "a/*" \
+        "$(rt w '["a/*"]' '[{"pattern":"a/*","script":"w","request_limit_fail_open":true}]')"
+
+    # Another Worker's routes are not ours to police, and must not be read as
+    # ours either.
+    eq "a sibling Worker's routes are ignored" "OK" \
+       "$(rt w '["a/*"]' '[{"pattern":"a/*","script":"w"},{"pattern":"z/*","script":"other"}]')"
+
+    # Zero is not a pass. Both of these compare equal-and-empty.
+    has "a config with no routes is refused" "declares no routes" \
+        "$(rt w '[]' "$(live)")"
+    has "no live route for this script is refused" "no live route is bound" \
+        "$(rt w '["a/*"]' '[{"pattern":"z/*","script":"other"}]')"
+    has "  and it says which scripts the zone does have" "other" \
+        "$(rt w '["a/*"]' '[{"pattern":"z/*","script":"other"}]')"
+
+    # Both directions at once must report both, not stop at the first.
+    both="$(rt w '["a/*","c/*"]' '[{"pattern":"a/*","script":"w"},{"pattern":"b/*","script":"w"}]')"
+    has "both directions are reported: missing" "declared but not live" "$both"
+    has "both directions are reported: undeclared" "absent from" "$both"
     exit $((fail > 0))
 ) || groups_failed=$((groups_failed + 1))
 
