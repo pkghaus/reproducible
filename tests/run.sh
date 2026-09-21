@@ -43,7 +43,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=87
+EXPECTED_ASSERTIONS=90
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -299,6 +299,45 @@ print(max(c.values()))')"
     eq "considered counts folded items, not index rows" "6" \
        "$(printf '%s' "$out" | field 'print(plan["considered"])')"
 
+    # An UNKWN carries no information about the archive, and its commonest
+    # cause is snapshot.debian.org refusing under load. Ranked with the
+    # decided verdicts, one transient timeout cost a full sweep of the fleet
+    # before anything looked at that artifact again.
+    rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+    verdict unstable amd64 croc 11.5.3-2 2026-09-20T00:00:00Z
+    verdict unstable amd64 pkghaus-archive-keyring 2026.09.11 2026-09-01T00:00:00Z
+    verdict unstable arm64 pkghaus-archive-keyring 2026.09.11 2026-09-01T00:00:00Z
+    # croc is NEWER but UNKWN; the keyring is older and GOOD.
+    python3 - "$WORK/state/unstable/amd64/croc.json" <<'PYEOF'
+import json, sys
+p = sys.argv[1]
+v = json.load(open(p)); v["status"] = "UNKWN"
+json.dump(v, open(p, "w"))
+PYEOF
+    out="$(MAX_PER_LEG=1 plan)"
+    eq "an UNKWN outranks an older decided verdict" "croc" \
+       "$(printf '%s' "$out" | field 'print([i["package"] for i in plan["items"]
+if i["suite"]=="unstable" and i["build_arch"]=="amd64"][0])')"
+    eq "and says why it was picked" "last verdict was UNKWN" \
+       "$(printf '%s' "$out" | field 'print([i["reason"] for i in plan["items"]
+if i["suite"]=="unstable" and i["build_arch"]=="amd64"][0])')"
+    # But a never-checked artifact still outranks an UNKWN: an empty cell is
+    # a worse silence than an honest "could not tell".
+    rm -f "$WORK/state/unstable/amd64/pkghaus-archive-keyring.json"
+    out="$(MAX_PER_LEG=1 plan)"
+    eq "never checked still comes before UNKWN" "pkghaus-archive-keyring" \
+       "$(printf '%s' "$out" | field 'print([i["package"] for i in plan["items"]
+if i["suite"]=="unstable" and i["build_arch"]=="amd64"][0])')"
+
+    rm -rf "$WORK/state"; mkdir -p "$WORK/state"
+    verdict unstable amd64 croc 11.5.3-2 2026-09-01T00:00:00Z
+    verdict trixie amd64 croc '11.5.3-2~haus13+1' 2026-09-19T00:00:00Z
+    verdict unstable arm64 croc 11.5.3-2 2026-09-10T00:00:00Z
+    verdict trixie arm64 croc '11.5.3-2~haus13+1' 2026-09-15T00:00:00Z
+    verdict unstable amd64 pkghaus-archive-keyring 2026.09.11 2026-09-18T00:00:00Z
+    verdict unstable arm64 pkghaus-archive-keyring 2026.09.11 2026-09-18T00:00:00Z
+    verdict trixie amd64 pkghaus-archive-keyring '2026.09.11~haus13+1' 2026-09-17T00:00:00Z
+    verdict trixie arm64 pkghaus-archive-keyring '2026.09.11~haus13+1' 2026-09-17T00:00:00Z
     out="$(ONLY_PACKAGES=croc plan)"
     eq "ONLY_PACKAGES filters" "croc" \
        "$(printf '%s' "$out" | field 'print(" ".join(sorted({i["package"] for i in plan["items"]})))')"

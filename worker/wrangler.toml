@@ -30,10 +30,24 @@ routes = [
 ]
 
 # The verdicts, and nothing else. A SEPARATE bucket from the archive's
-# pkghaus-apt on purpose: a verifier that can write to what it verifies is
-# making a weaker claim than one that cannot, and this binding is read-only in
-# practice because the Worker never calls put(). The writes come from CI, over
-# the S3 API, with credentials scoped to this bucket.
+# pkghaus-apt, and the reason is prefix scoping, not taste.
+#
+# buildinfos.pkg.haus DOES share pkghaus-apt, and that is consistent: it only
+# reads. It holds no R2 credentials, and its Worker never calls put() -- the
+# binding is the whole of its access. This Worker is the same, a pure reader.
+#
+# What differs is the WRITER. Verdicts are uploaded by this repo's CI over the
+# S3 API, and R2 API tokens scope to whole buckets with no prefix or path
+# condition (checked against Cloudflare's token docs 2026-09-21). A token
+# letting CI write `verify/` under pkghaus-apt would equally let it write
+# `pool/` and `dists/`: every .deb and every signed index. The job holding it
+# runs debrebuild under --privileged, executing upstream build scripts, six
+# legs a day.
+#
+# Separate buckets mean a compromised verifier can lie in a verdict and
+# nothing more; the archive's own hashes still hold. One bucket would let it
+# rewrite the artifact AND publish GOOD for it, which is the estate's first
+# rule - a check that shares state with its subject cannot detect the defect.
 [[r2_buckets]]
 binding = "VERDICTS"
 bucket_name = "pkghaus-reproducible"

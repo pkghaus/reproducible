@@ -3,8 +3,10 @@
 // Reads one JSON verdict per published artifact from R2 and renders them. It
 // never writes: the verdicts are produced by scripts/verify.sh in CI and
 // uploaded from there, and this Worker's binding is to a DIFFERENT bucket from
-// the archive's on purpose. A verifier that can write to what it verifies is
-// making a weaker claim than one that cannot.
+// the archive's on purpose. Not because this Worker would abuse a shared one
+// -- buildinfos reads the archive's bucket and is fine -- but because R2 API
+// tokens scope to whole buckets, so the CI credential that writes verdicts
+// would equally be able to write pool/ and dists/. See wrangler.toml.
 //
 // The page furniture below is a COPY of buildinfos.pkg.haus's, which is a copy
 // of apt.pkg.haus's, not an approximation. Three hosts, one surface, and a

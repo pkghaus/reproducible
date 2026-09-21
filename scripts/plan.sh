@@ -10,10 +10,20 @@
 #
 # Two things decide the plan.
 #
-# PRIORITY. An artifact with no verdict, or whose verdict names a version the
-# archive no longer publishes, comes first: those are the two states where the
-# page is silent about something it should be reporting. Everything else is
-# ordered oldest-verdict-first, so a fleet at rest re-verifies round-robin.
+# PRIORITY, in three tiers.
+#
+#   0  no verdict at all, or a verdict for a version the archive no longer
+#      publishes. The two states where the page is silent about something it
+#      should be reporting.
+#   1  the verdict is UNKWN. It carries no information about the archive, and
+#      the commonest cause by far is snapshot.debian.org refusing under load,
+#      which is transient. Ranking it with the decided verdicts made a
+#      one-second timeout cost a full sweep of the fleet before anything
+#      looked at that artifact again -- twelve days at the default cap.
+#   2  GOOD or BAD. Re-verified round-robin, oldest first, because a package
+#      can stop reproducing with nothing in the pipeline changing.
+#
+# Within every tier, oldest first.
 #
 # THROTTLE. snapshot.debian.org is a rate-limited volunteer service and it is
 # the binding constraint on this whole system, not CI minutes. MAX_PER_LEG
@@ -83,6 +93,7 @@ for target, rows in targets.items():
             "buildinfo": row["buildinfo"],
             "targets": [],
             "_stale": [],
+            "_unknown": False,
             "_age": None,
         })
         item["targets"].append(target)
@@ -95,6 +106,10 @@ for target, rows in targets.items():
             item["_stale"].append(f"verdict is for {verdict.get('version')!r}")
             item["_age"] = EPOCH
         else:
+            # One rebuild writes every target's verdict, so if ANY of them is
+            # UNKWN the whole item is worth retrying sooner.
+            if verdict.get("status") == "UNKWN":
+                item["_unknown"] = True
             checked = verdict.get("checked_at") or EPOCH
             if item["_age"] is None or checked < item["_age"]:
                 item["_age"] = checked
@@ -103,14 +118,24 @@ work = []
 for key in sorted(items):
     item = items[key]
     item["targets"].sort()
-    item["reason"] = item["_stale"][0] if item["_stale"] else "re-verify"
+    if item["_stale"]:
+        item["reason"] = item["_stale"][0]
+    elif item["_unknown"]:
+        item["reason"] = "last verdict was UNKWN"
+    else:
+        item["reason"] = "re-verify"
     work.append(item)
 
-# Priority first, then oldest. Python's sort is stable and the input is already
+# Tier first, then oldest. Python's sort is stable and the input is already
 # name-ordered, so ties break the same way on every run -- which is what makes
 # a round-robin sweep actually reach every artifact instead of revisiting
 # whichever one the dict happened to yield first.
-work.sort(key=lambda i: (0 if i["_stale"] else 1, i["_age"]))
+def tier(item):
+    if item["_stale"]:
+        return 0
+    return 1 if item["_unknown"] else 2
+
+work.sort(key=lambda i: (tier(i), i["_age"]))
 
 picked, per_leg = [], {}
 for item in work:
