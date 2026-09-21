@@ -49,13 +49,13 @@ for it.
 ## Checking one package yourself
 
 ```sh
-B=https://buildinfos.pkg.haus/buildinfo-pool/c/croc
-curl -fsSLO $B/croc_11.5.3-2_amd64.buildinfo
-curl -fsSLO $B/croc_11.5.3-2.dsc
-curl -fsSLO $B/croc_11.5.3-2.debian.tar.xz
-curl -fsSLO $B/croc_11.5.3.orig.tar.gz
+B=https://buildinfos.pkg.haus/buildinfo-pool/b/berry
+curl -fsSLO $B/berry_0.1.13-4~haus13+1_amd64.buildinfo
+curl -fsSLO $B/berry_0.1.13-4~haus13+1.dsc
+curl -fsSLO $B/berry_0.1.13-4~haus13+1.debian.tar.xz
+curl -fsSLO $B/berry_0.1.13.orig.tar.gz
 
-debrebuild --builder=dpkg --buildresult=./rebuilt croc_11.5.3-2_amd64.buildinfo
+debrebuild --builder=dpkg --buildresult=./rebuilt berry_0.1.13-4~haus13+1_amd64.buildinfo
 ```
 
 `verify/rebuild.sh` in this repo does the same thing inside a throwaway
@@ -112,13 +112,13 @@ One object per `(package, suite, architecture)`, overwritten in place.
 
 ```json
 {
-  "package": "croc",
-  "version": "11.5.3-2",
-  "suite": "unstable",
+  "package": "berry",
+  "version": "0.1.13-4~haus13+1",
+  "suite": "trixie",
   "arch": "amd64",
   "status": "GOOD",
   "checked_at": "2026-09-21T07:57:54Z",
-  "buildinfo": "https://buildinfos.pkg.haus/buildinfo-pool/c/croc/croc_11.5.3-2_amd64.buildinfo",
+  "buildinfo": "https://buildinfos.pkg.haus/buildinfo-pool/b/berry/berry_0.1.13-4~haus13+1_amd64.buildinfo",
   "debrebuild": "all OK",
   "unknown_reason": null,
   "rebuilt_sha256": "5560b8a6...",

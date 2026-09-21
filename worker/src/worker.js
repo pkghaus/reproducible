@@ -393,14 +393,14 @@ only a completed rebuild with differing checksums earns that word.</p>
 <p>Nothing here needs to be taken on trust. Every input is published, and the
 rebuild is <code>debrebuild</code> from Debian's own devscripts:</p>
 <pre><span class="c"># everything the rebuild needs, for one package</span>
-B=https://buildinfos.pkg.haus/buildinfo-pool/c/croc
-curl -fsSLO $B/croc_11.5.3-2_amd64.buildinfo
-curl -fsSLO $B/croc_11.5.3-2.dsc
-curl -fsSLO $B/croc_11.5.3-2.debian.tar.xz
-curl -fsSLO $B/croc_11.5.3.orig.tar.gz
+B=https://buildinfos.pkg.haus/buildinfo-pool/b/berry
+curl -fsSLO $B/berry_0.1.13-4~haus13+1_amd64.buildinfo
+curl -fsSLO $B/berry_0.1.13-4~haus13+1.dsc
+curl -fsSLO $B/berry_0.1.13-4~haus13+1.debian.tar.xz
+curl -fsSLO $B/berry_0.1.13.orig.tar.gz
 
 <span class="c"># rebuild and compare all four checksums</span>
-debrebuild --builder=dpkg --buildresult=./rebuilt croc_11.5.3-2_amd64.buildinfo</pre>
+debrebuild --builder=dpkg --buildresult=./rebuilt berry_0.1.13-4~haus13+1_amd64.buildinfo</pre>
 
 <h2>What this does not prove</h2>
 <p>These rebuilds run in the same CI that produced the packages, so this is a
