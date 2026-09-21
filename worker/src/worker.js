@@ -382,10 +382,11 @@ comparing the bytes.</p>
 <span class="v bad">BAD</span> the rebuild completed and the bytes differed.
 <span class="v unkwn">UNKWN</span> the rebuild could not be completed, so
 nothing is claimed either way.</p>
-<p><strong>UNKWN is not a soft failure.</strong> snapshot.debian.org is a
+<p><strong><span class="v unkwn">UNKWN</span> is not a soft failure.</strong> snapshot.debian.org is a
 rate-limited volunteer service that times out under load, and a build
 dependency can stop being resolvable years after the fact. Recording either as
-BAD would be a claim about this archive that the evidence does not support, so
+<span class="v bad">BAD</span> would be a claim about this archive that the
+evidence does not support, so
 only a completed rebuild with differing checksums earns that word.</p>
 
 <h2>Checking it yourself</h2>
@@ -402,16 +403,14 @@ curl -fsSLO $B/croc_11.5.3.orig.tar.gz
 debrebuild --builder=dpkg --buildresult=./rebuilt croc_11.5.3-2_amd64.buildinfo</pre>
 
 <h2>What this does not prove</h2>
-<p>These rebuilds run in the same CI that produced the packages. That makes this
-a regression detector, not a trust root: if the build pipeline were compromised,
-so is the rebuilder. What it reliably catches is unintentional
-non-determinism - a build reading the host's CPU, a toolchain that was recorded
-rather than pinned, a timestamp leaking into an archive - which is the failure
-that has actually occurred here.</p>
-<p>The property worth having is an <em>independent</em> rebuild, by someone who
-did not build the package. Everything needed for that is published above, in
-the same layout Debian's own rebuilders consume. This page is what makes that
-possible, not a substitute for it.</p>
+<p>These rebuilds run in the same CI that produced the packages, so this is a
+regression detector and not a trust root: a compromised build pipeline would
+take the rebuilder with it. What it does catch is unintentional
+non-determinism - a build reading the host's CPU, a toolchain recorded rather
+than pinned, a timestamp leaking into an archive - which is the failure that
+has actually happened here. An <em>independent</em> rebuild, by someone who
+did not build the package, is the stronger property, and everything needed
+for one is published above.</p>
 </div>`;
 
 export function renderRoot(verdicts, inventory) {

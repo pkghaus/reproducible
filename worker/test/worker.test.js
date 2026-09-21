@@ -612,11 +612,27 @@ test("no binding at all is a 503 too", async () => {
   assert.equal(r.status, 503);
 });
 
+test("every verdict word in the prose wears its verdict colour", () => {
+  // The definitions paragraph styled all three; the paragraph explaining
+  // UNKWN had it as bare <strong>, so the word was amber everywhere except
+  // where it was being explained. The rule, not the instance.
+  const html = renderRoot(VERDICTS, INVENTORY);
+  const about = /<div class="about">[\s\S]*?<\/div>/.exec(html)[0];
+  const prose = about.replace(/<pre>[\s\S]*?<\/pre>/g, "");
+  for (const [word, cls] of [["GOOD", "good"], ["BAD", "bad"], ["UNKWN", "unkwn"]]) {
+    const styled = new RegExp(`<span class="v ${cls}">${word}</span>`, "g");
+    const total = new RegExp(`\\b${word}\\b`, "g");
+    assert.equal((prose.match(total) || []).length,
+                 (prose.match(styled) || []).length,
+                 `${word} appears in the prose unstyled`);
+  }
+});
+
 test("the root page explains what each word means and what it does not prove", () => {
   const html = renderRoot(VERDICTS, INVENTORY);
   // The prose lives in the page rather than a README beside the verdicts, so
   // there is one copy to keep current.
-  assert.match(html, /UNKWN is not a soft failure/);
+  assert.match(html, /is not a soft failure/);
   assert.match(html, /debrebuild/);
   assert.match(html, /snapshot\.debian\.org/);
   // The honest caveat: same CI, so this is a regression detector rather than
