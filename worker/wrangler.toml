@@ -1,0 +1,50 @@
+name = "pkghaus-reproducible"
+main = "src/worker.js"
+compatibility_date = "2026-08-01"
+
+# The whole host. Nothing else claims a pattern here.
+#
+# The analytics proxy is the exception, and it needs its own pin:
+# reproducible.pkg.haus/* is 23 characters and *pkg.haus/zk/* is 14, so this
+# route wins /zk/ and answers it with this Worker's 404. pkghaus/plausible-
+# worker carries `reproducible.pkg.haus/zk/*` for that reason, the same pin
+# apt.pkg.haus and buildinfos.pkg.haus already have. Without it the page's
+# script tag 404s and analytics are silently dark.
+#
+# The other half of that wiring is an entry in plausible-worker's PLAUSIBLE
+# map, which needs a site created in the Plausible dashboard and cannot be
+# written from here. Until it exists the route is live and the Worker logs
+# "PLAUSIBLE has no script for host reproducible.pkg.haus" -- visible, which
+# is the point of adding the route first.
+#
+# Leave the failure mode at Cloudflare's default, fail CLOSED. There is nothing
+# to fall open TO: every pkg.haus host is AAAA 100::, the discard prefix, so a
+# bypassed request hangs for thirty seconds and ends in 504, where fail closed
+# errors immediately and a client can retry.
+#
+# No wrangler field for it. The flag is on the route object, set with
+# PUT /zones/<id>/workers/routes/<route-id>, which carries the WHOLE object --
+# send pattern and script too or the route is reassigned.
+routes = [
+  { pattern = "reproducible.pkg.haus/*", zone_name = "pkg.haus" },
+]
+
+# The verdicts, and nothing else. A SEPARATE bucket from the archive's
+# pkghaus-apt on purpose: a verifier that can write to what it verifies is
+# making a weaker claim than one that cannot, and this binding is read-only in
+# practice because the Worker never calls put(). The writes come from CI, over
+# the S3 API, with credentials scoped to this bucket.
+[[r2_buckets]]
+binding = "VERDICTS"
+bucket_name = "pkghaus-reproducible"
+
+# No [assets] block on purpose. Every page here is rendered from the bucket's
+# contents, so there is no tree to keep in sync and no deploy that can silently
+# publish an empty site. Same reasoning as buildinfos.
+#
+# The cost is that the branded 404.html every other host serves from its asset
+# layer has to be rendered here instead, which errorPage() does.
+
+[observability]
+enabled = true
+head_sampling_rate = 1

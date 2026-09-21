@@ -1,0 +1,212 @@
+name: Verify
+
+# Rebuilds published packages from their own build records and writes the
+# verdicts reproducible.pkg.haus serves.
+#
+# Two cadences, and the second is the one that matters.
+#
+#   ON PUBLISH   pkghaus/apt dispatches this at the end of an ingest that
+#                published something. A freshly released package gets a
+#                verdict within minutes instead of waiting for the sweep.
+#   THROTTLED    a daily sweep takes the oldest verdicts and re-checks them.
+#                A package that stops reproducing does so without anything in
+#                the pipeline changing -- zola's did, through a compiler that
+#                moved underneath it -- so a verdict is only ever a statement
+#                about the day it was made.
+#
+# The throttle is not about CI minutes. snapshot.debian.org is a rate-limited
+# volunteer service, it is the only source of the exact build-dependency
+# versions a record names, and it is the binding constraint on this whole
+# surface. MAX_PER_LEG is how much of it one run is allowed to ask for.
+
+on:
+  repository_dispatch:
+    types: [archive-published]
+  schedule:
+    # Off the hour, and not at midnight: snapshot.debian.org is busiest when
+    # every cron in Europe fires at once.
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: >
+          Space-separated package names to verify, or empty for whatever the
+          priority order picks. Names, not versions: the run always verifies
+          the version the archive currently publishes.
+        type: string
+        default: ""
+      max_per_leg:
+        description: >
+          How many rebuilds each of the six legs may start. Six legs run in
+          parallel and each works through its own list serially.
+        type: string
+        default: "3"
+
+permissions:
+  contents: read
+
+# One verification wave at a time. Two would race the bucket and, worse, both
+# would plan from the same set of verdicts and pick the same artifacts --
+# spending two rebuilds to learn one fact against a service that rations them.
+concurrency:
+  group: verify
+  cancel-in-progress: false
+
+env:
+  R2_BUCKET: pkghaus-reproducible
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      legs: ${{ steps.plan.outputs.legs }}
+      count: ${{ steps.plan.outputs.count }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Read what the archive publishes
+        run: scripts/inventory.sh inventory.json
+
+      # The verdicts already in the bucket, so the plan can tell "never
+      # checked" from "checked last week" from "checked, but for a version we
+      # no longer publish". The key does not carry the version, so this reads
+      # the objects rather than listing them.
+      - name: Fetch the current verdicts
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.PKGHAUS_REPRODUCIBLE_R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.PKGHAUS_REPRODUCIBLE_R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.PKGHAUS_R2_ENDPOINT }}
+        run: |
+          mkdir -p state
+          AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" \
+          AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY" \
+          AWS_DEFAULT_REGION=auto \
+            aws --endpoint-url "$R2_ENDPOINT" \
+              s3 sync "s3://$R2_BUCKET/verify/" state/ --only-show-errors
+
+      - name: Plan
+        id: plan
+        env:
+          # A dispatch names one package and means it; the sweep is the case
+          # the small default exists for.
+          MAX_PER_LEG: ${{ github.event_name == 'repository_dispatch' && '12' || inputs.max_per_leg || '3' }}
+          ONLY_PACKAGES: ${{ github.event.client_payload.packages || inputs.packages || '' }}
+        run: |
+          scripts/plan.sh inventory.json state > plan.json
+          legs="$(python3 -c 'import json;print(json.dumps(json.load(open("plan.json"))["legs"]))')"
+          count="$(python3 -c 'import json;print(len(json.load(open("plan.json"))["items"]))')"
+          printf 'legs=%s\n' "$legs" >> "$GITHUB_OUTPUT"
+          printf 'count=%s\n' "$count" >> "$GITHUB_OUTPUT"
+          printf '%s rebuild(s) planned\n' "$count" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the plan and the inventory
+        uses: actions/upload-artifact@v7
+        with:
+          name: plan
+          path: |
+            plan.json
+            inventory.json
+          if-no-files-found: error
+
+  verify:
+    needs: plan
+    if: needs.plan.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJSON(needs.plan.outputs.legs) }}
+    # arm64 on a native runner, not QEMU: debrebuild installs the record's
+    # exact build dependencies and runs a real build, which under emulation
+    # would take hours and change what the timeout means.
+    #
+    # The non-empty branch has to be in the middle. In a GitHub expression
+    # `a && b || c` yields c whenever b is falsy, so the obvious spelling with
+    # the default first would give every leg the same runner.
+    runs-on: ${{ matrix.leg.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    # Three rebuilds of Rust packages, serially, against a service that stalls.
+    # verify.sh bounds each artifact at VERIFY_TIMEOUT; this bounds the leg.
+    timeout-minutes: 240
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download the plan
+        uses: actions/download-artifact@v8
+        with:
+          name: plan
+
+      - name: Rebuild and compare
+        env:
+          VERIFY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          scripts/verify.sh plan.json \
+            "${{ matrix.leg.suite }}" "${{ matrix.leg.arch }}" verdicts
+
+      - name: Upload this leg's verdicts
+        uses: actions/upload-artifact@v7
+        with:
+          name: verdicts-${{ matrix.leg.suite }}-${{ matrix.leg.arch }}
+          path: verdicts/
+          if-no-files-found: error
+
+  publish:
+    needs: [plan, verify]
+    # `always()` so a leg that failed does not throw away the five that did
+    # not. A partial wave is the normal state of this system, not an error:
+    # every artifact carries its own verdict and the page is built from
+    # whatever is in the bucket.
+    if: always() && needs.plan.outputs.count != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Download the plan
+        uses: actions/download-artifact@v8
+        with:
+          name: plan
+
+      # merge-multiple, because every leg writes under the same
+      # <suite>/<arch>/ tree and the union is what publish.sh uploads. A leg
+      # that failed left no artifact, and download-artifact does not mind.
+      - name: Download every leg's verdicts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: verdicts-*
+          merge-multiple: true
+          path: verdicts
+
+      - name: Publish
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.PKGHAUS_REPRODUCIBLE_R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.PKGHAUS_REPRODUCIBLE_R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.PKGHAUS_R2_ENDPOINT }}
+        run: scripts/publish.sh verdicts inventory.json
+
+      - name: Report
+        run: |
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import glob, json, collections
+          counts = collections.Counter()
+          rows = []
+          for path in sorted(glob.glob("verdicts/*/*/*.json")):
+              v = json.load(open(path, encoding="utf-8"))
+              counts[v["status"]] += 1
+              rows.append((v["suite"], v["arch"], v["package"], v["status"],
+                           v.get("debrebuild") or v.get("unknown_reason") or ""))
+          print("| suite | arch | package | verdict | detail |")
+          print("|---|---|---|---|---|")
+          for row in rows:
+              print("| " + " | ".join(row) + " |")
+          print()
+          print(" ".join(f"{k} {n}" for k, n in sorted(counts.items())))
+          PY

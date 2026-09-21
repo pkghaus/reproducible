@@ -1,0 +1,25 @@
+version: 2
+
+updates:
+  # Actions are pinned to commit SHAs and both linters by image digest, which
+  # is what stops a moved tag changing what deploys this worker or what
+  # rebuilds the archive's packages. It is also what stops any of them
+  # updating on their own.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "ci"
+
+  # wrangler is pinned exactly and runs with a token that can deploy a worker
+  # on a pkg.haus host. Pinning stops it changing on its own; this stops it
+  # going stale. The directory is /worker, not /: package.json lives beside the
+  # worker, and a config pointing at the root finds nothing and reports
+  # nothing, so the gap reads exactly like coverage.
+  - package-ecosystem: npm
+    directory: /worker
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "deps"

@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+
+      # npm ci, never npm install: the lockfile is the pin, and a deploy token
+      # that can publish the Worker serving this host should not be handing
+      # resolution to whatever npm feels like today.
+      - name: Install
+        working-directory: worker
+        run: npm ci
+
+      - name: Test the worker
+        working-directory: worker
+        run: npm test
+
+      - name: Test the scripts
+        run: tests/run.sh
+
+  lint:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: shellcheck
+        # Pinned by digest rather than taken from the runner image. Its
+        # shellcheck moves on its own schedule and the info-level checks
+        # differ between versions, so a lint that passes locally and fails in
+        # CI for no reason anyone changed is worse than a slightly stale one.
+        run: |
+          docker run --rm \
+            --volume "$PWD:/repo" \
+            --workdir /repo \
+            koalaman/shellcheck@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d \
+            -x scripts/*.sh tests/*.sh verify/*.sh
+
+      - name: actionlint
+        # Pinned by digest; go-yaml inside it also rejects duplicate mapping
+        # keys, which GitHub's parser rejects but many local checks accept.
+        run: |
+          docker run --rm \
+            --volume "$PWD:/repo" \
+            --workdir /repo \
+            rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -color
+
+      # PyYAML's safe_load accepts duplicate mapping keys and GitHub does not,
+      # so "it parses locally" proves nothing without this. Also checks the
+      # estate's two workflow conventions: persist-credentials on every
+      # checkout, and a SHA pin on every third-party action.
+      - name: Reject duplicate YAML keys
+        run: python3 tests/yamlcheck.py .github/dependabot.yml .github/workflows/*.yml
+
+  twins:
+    # verify/rebuild.sh and verify/Dockerfile are byte-identical copies of
+    # pkghaus/apt's, which is what lets the archive keep a hand-run drill while
+    # this repo runs the same procedure unattended. Nothing else enforces it,
+    # and a rebuild harness that has quietly diverged from the one a maintainer
+    # tests with is the kind of difference that only shows up in a disagreement
+    # about a verdict.
+    #
+    # Fetched from the public repo rather than checked out: this needs one file
+    # pair, not a second clone, and no credential. A red run here means the two
+    # moved apart, which is a real finding, not flakiness -- the retries below
+    # are what separate that from a bad minute on raw.githubusercontent.com.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Diff the rebuild harness against pkghaus/apt
+        env:
+          RAW: https://raw.githubusercontent.com/pkghaus/apt/master/verify
+        run: |
+          fail=0
+          for f in rebuild.sh Dockerfile; do
+            curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 \
+              -o "/tmp/apt-$f" "$RAW/$f"
+            # Not -s: the diff is the whole point of the failure message.
+            if diff -u "/tmp/apt-$f" "verify/$f"; then
+              echo "verify/$f matches pkghaus/apt"
+            else
+              echo "::error::verify/$f has drifted from pkghaus/apt/verify/$f"
+              fail=1
+            fi
+          done
+          exit "$fail"
