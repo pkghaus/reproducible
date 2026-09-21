@@ -95,10 +95,16 @@ tests/       run.sh drives the scripts; worker/test drives the Worker
 ```
 
 `verify/rebuild.sh` and `verify/Dockerfile` are byte-identical copies of
-`pkghaus/apt`'s. The archive keeps them so a maintainer can check one package
-without the verifier; this repo keeps them so a run needs nothing from another
-repo. CI here fetches the archive's copies and diffs, so a change to either
-turns that check red until both move.
+[pkghaus/apt](https://github.com/pkghaus/apt)'s. The archive keeps them so a
+maintainer can check one package without the verifier; this repo keeps them so
+a verification run needs nothing from another repo. The `twins` job in CI
+fetches the archive's copies and diffs them, so a change to either goes red
+until both move.
+
+Nothing marks them inside the files themselves. A header saying "this has a
+twin" is a change to the files, which is drift until both repos merge it, and
+the first push of this repo proved it: `twins` went red on a comment. The note
+lives in both READMEs instead.
 
 ## Verdict objects
 

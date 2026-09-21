@@ -9,10 +9,13 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
-
+# No concurrency group, deliberately. deploy-worker.yml calls this file as a
+# reusable workflow, so a push to master starts this workflow twice on the
+# same ref: once on its own and once inside the deploy. A shared group with
+# cancel-in-progress makes one kill the other, and which one dies is a race --
+# measured on the first push to this repo, where the standalone run was
+# cancelled and only the deploy's copy survived. buildinfos has the same
+# deploy-calls-ci shape and no group for the same reason.
 jobs:
   test:
     runs-on: ubuntu-24.04
@@ -85,7 +88,11 @@ jobs:
   twins:
     # verify/rebuild.sh and verify/Dockerfile are byte-identical copies of
     # pkghaus/apt's, which is what lets the archive keep a hand-run drill while
-    # this repo runs the same procedure unattended. Nothing else enforces it,
+    # this repo runs the same procedure unattended. This job is the ONLY thing
+    # that says so: nothing marks the files themselves, because a header saying
+    # "this has a twin" is itself a change to the files and therefore drift
+    # until both repos merge it. That was measured on this repo's first push,
+    # where such a header turned this job red. Nothing else enforces it,
     # and a rebuild harness that has quietly diverged from the one a maintainer
     # tests with is the kind of difference that only shows up in a disagreement
     # about a verdict.

@@ -1,15 +1,5 @@
 #!/usr/bin/env bash
 #
-# TWIN. This file is byte-identical in two repositories and must stay that way:
-#
-#   pkghaus/apt/verify/rebuild.sh            the hand-run drill
-#   pkghaus/reproducible/verify/rebuild.sh   what reproducible.pkg.haus runs
-#
-# The archive keeps it so a maintainer can check one package without the
-# verifier; the verifier keeps it so a run needs nothing from another repo.
-# pkghaus/reproducible's CI fetches the archive's copy and diffs, so a change
-# to either turns that check red until both move.
-#
 # Rebuild a published package from its record and compare, using debrebuild.
 #
 #   verify/rebuild.sh <dir holding one package's .buildinfo, .dsc and tarballs>

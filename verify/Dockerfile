@@ -1,8 +1,3 @@
-#
-# TWIN. This file is byte-identical in two repositories and must stay that way:
-# pkghaus/apt/verify/Dockerfile and pkghaus/reproducible/verify/Dockerfile.
-# pkghaus/reproducible's CI diffs them. See rebuild.sh for why.
-#
 # The base MUST match the suite of the record being verified, and rebuild.sh
 # derives it from the .buildinfo's version qualifier. Pinned to sid here only as
 # the default for an unqualified (unstable) record.

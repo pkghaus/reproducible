@@ -43,7 +43,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=86
+EXPECTED_ASSERTIONS=87
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -556,12 +556,19 @@ echo "conventions that nothing else asserts"
     eq "the worker binds the verifier's own bucket" "1" \
        "$(grep -c 'bucket_name = "pkghaus-reproducible"' "$ROOT/worker/wrangler.toml")"
 
-    # verify/ is a byte-identical copy of pkghaus/apt's. CI diffs it against
-    # the published original; this only checks the copy is still here, because
-    # a deleted file makes that job pass by fetching and comparing nothing.
+    # verify/ is a byte-identical copy of pkghaus/apt's. The `twins` job in CI
+    # diffs it against the published original; this only checks the copy is
+    # still here, because a deleted file would make that job pass by fetching
+    # and comparing nothing.
     eq "the rebuild harness is present" "2" \
        "$(find "$ROOT/verify" -maxdepth 1 -type f \( -name rebuild.sh -o -name Dockerfile \) | wc -l)"
-    has "and it names its twin" "TWIN" "$(head -5 "$ROOT/verify/rebuild.sh")"
+    # Nothing inside those two files may mark them as twins. A header saying so
+    # is itself a change to them, which is drift until pkghaus/apt merges the
+    # same header -- measured on this repo's first push, where exactly that
+    # turned the twins job red. The note belongs in both READMEs.
+    eq "and nothing inside them claims to be a twin" "0" \
+       "$(grep -lc 'TWIN' "$ROOT/verify/rebuild.sh" "$ROOT/verify/Dockerfile" 2>/dev/null | wc -l)"
+    has "while the README does say so" "byte-identical" "$(cat "$ROOT/README.md")"
     exit $((fail > 0))
 ) || groups_failed=$((groups_failed + 1))
 
