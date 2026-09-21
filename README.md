@@ -3,9 +3,9 @@
 Whether each package in the [pkg.haus](https://apt.pkg.haus) archive rebuilds
 byte-for-byte from its own build record.
 
-Live at **https://reproducible.pkg.haus**. The verdicts are also machine
-readable: `/verify/<suite>/<arch>/<package>.json` for one artifact,
-`/inventory.json` for what the archive publishes.
+**https://reproducible.pkg.haus**. The verdicts are also machine readable:
+`/verify/<suite>/<arch>/<package>.json` for one artifact, `/inventory.json`
+for what the archive publishes.
 
 ## The three words
 
