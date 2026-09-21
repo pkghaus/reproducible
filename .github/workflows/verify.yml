@@ -144,12 +144,16 @@ jobs:
         with:
           name: plan
 
+      # Every expression through env:, none inside the run: block. The estate's
+      # rule, and it bites harder here than usual: suite and arch reach the
+      # matrix from the archive's own Packages indices by way of plan.json, so
+      # they are upstream data rather than anything this repo wrote.
       - name: Rebuild and compare
         env:
           VERIFY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        run: |
-          scripts/verify.sh plan.json \
-            "${{ matrix.leg.suite }}" "${{ matrix.leg.arch }}" verdicts
+          LEG_SUITE: ${{ matrix.leg.suite }}
+          LEG_ARCH: ${{ matrix.leg.arch }}
+        run: scripts/verify.sh plan.json "$LEG_SUITE" "$LEG_ARCH" verdicts
 
       - name: Upload this leg's verdicts
         uses: actions/upload-artifact@v7
