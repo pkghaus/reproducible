@@ -5,9 +5,13 @@ name: Verify
 #
 # Two cadences, and the second is the one that matters.
 #
-#   ON PUBLISH   pkghaus/apt dispatches this at the end of an ingest that
-#                published something. A freshly released package gets a
-#                verdict within minutes instead of waiting for the sweep.
+#   ON PUBLISH   pkghaus/apt fires a workflow_dispatch at the end of an
+#                ingest that published something, naming the packages. A
+#                freshly released package gets a verdict within minutes
+#                instead of waiting for the sweep. Deliberately not a
+#                repository_dispatch: that endpoint needs Contents: write on
+#                this repo, which can push commits, where a workflow dispatch
+#                needs only Actions: write, which cannot.
 #   THROTTLED    a daily sweep takes the oldest verdicts and re-checks them.
 #                A package that stops reproducing does so without anything in
 #                the pipeline changing -- zola's did, through a compiler that
@@ -20,8 +24,6 @@ name: Verify
 # surface. MAX_PER_LEG is how much of it one run is allowed to ask for.
 
 on:
-  repository_dispatch:
-    types: [archive-published]
   schedule:
     # Off the hour, and not at midnight: snapshot.debian.org is busiest when
     # every cron in Europe fires at once.
@@ -94,10 +96,12 @@ jobs:
       - name: Plan
         id: plan
         env:
-          # A dispatch names one package and means it; the sweep is the case
-          # the small default exists for.
-          MAX_PER_LEG: ${{ github.event_name == 'repository_dispatch' && '12' || inputs.max_per_leg || '3' }}
-          ONLY_PACKAGES: ${{ github.event.client_payload.packages || inputs.packages || '' }}
+          # Both come from the dispatch inputs, whoever fired it. The
+          # archive passes 12 because it names a handful of packages and
+          # wants them now; the schedule passes nothing and takes the default
+          # of 3, which is what rations snapshot.debian.org.
+          MAX_PER_LEG: ${{ inputs.max_per_leg || '3' }}
+          ONLY_PACKAGES: ${{ inputs.packages || '' }}
         run: |
           scripts/plan.sh inventory.json state > plan.json
           legs="$(python3 -c 'import json;print(json.dumps(json.load(open("plan.json"))["legs"]))')"
