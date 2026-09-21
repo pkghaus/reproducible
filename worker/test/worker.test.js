@@ -364,7 +364,27 @@ test("the root page carries the coverage column and the totals row", async () =>
   // checked / published, per target and in total.
   assert.match(body, /<td class="size pct">2 \/ 3<\/td>/);
   assert.match(body, /<td class="size pct">5 \/ 18<\/td>/);
-  assert.match(body, /<td class="size pct">75%<\/td>/);
+  assert.match(body, /<td class="size pct">75% of 4<\/td>/);
+});
+
+test("the percentage names its own denominator", async () => {
+  // "100%" beside "checked 22" reads as 22 of 22. When one of those is UNKWN
+  // it is 21 of 21, and the arithmetic a reader can actually do lands on
+  // 95.5%. The cell has to say which.
+  resetCache();
+  const body = await (await get("/")).text();
+  // unstable/amd64 in the fixture: 1 GOOD, 1 BAD, 0 UNKWN -> 50% of 2.
+  assert.match(body, /<td class="size pct">50% of 2<\/td>/);
+  // unstable/arm64: 1 GOOD, 0 BAD, 1 UNKWN -> 100% of 1, NOT 100% of 2.
+  assert.match(body, /<td class="size pct">100% of 1<\/td>/);
+  assert.doesNotMatch(body, /<td class="size pct">\d+(\.\d+)?%<\/td>/,
+    "a bare percentage with no denominator is back");
+});
+
+test("the prose says what the percentage is over", () => {
+  const html = renderRoot(VERDICTS, INVENTORY);
+  assert.match(html, /decided/);
+  assert.match(html, /checked/);
 });
 
 test("the count columns are right-aligned with tabular figures", async () => {

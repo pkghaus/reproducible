@@ -284,6 +284,16 @@ export function totals(rows) {
   };
 }
 
+// The percentage AND what it is a percentage of. "100%" next to "checked 22"
+// reads as 22 of 22, and when one of those 22 is UNKWN it is 21 of 21 - the
+// reader has no way to know that from a bare percentage, and the arithmetic
+// they can do lands on 95.5%. Naming the denominator in the cell is cheaper
+// than a legend nobody reads.
+function pctCell(r) {
+  if (r.pct === null) return "-";
+  return `${r.pct}% of ${r.GOOD + r.BAD}`;
+}
+
 function countCells(r) {
   return `<td class="num"><span class="v good">${r.GOOD}</span></td>` +
     `<td class="num"><span class="v ${r.BAD ? "bad" : "none"}">${r.BAD}</span></td>` +
@@ -296,12 +306,12 @@ function summaryTable(rows, tot) {
     `<td class="tgt"><code>${esc(r.arch)}</code></td>` +
     `<td class="size pct">${r.checked} / ${r.published}</td>` +
     countCells(r) +
-    `<td class="size pct">${r.pct === null ? "-" : r.pct + "%"}</td></tr>`).join("\n");
+    `<td class="size pct">${pctCell(r)}</td></tr>`).join("\n");
   const total = `<tr class="tot"><td class="tgt"><code>all</code></td>` +
     `<td class="tgt"><code>all</code></td>` +
     `<td class="size pct">${tot.checked} / ${tot.published}</td>` +
     countCells(tot) +
-    `<td class="size pct">${tot.pct === null ? "-" : tot.pct + "%"}</td></tr>`;
+    `<td class="size pct">${pctCell(tot)}</td></tr>`;
   return `<div class="tablewrap"><table>
 <thead><tr><th>suite</th><th>arch</th><th class="size">checked</th>
 <th class="num">good</th><th class="num">bad</th><th class="num">unkwn</th>
@@ -388,6 +398,12 @@ dependency can stop being resolvable years after the fact. Recording either as
 <span class="v bad">BAD</span> would be a claim about this archive that the
 evidence does not support, so
 only a completed rebuild with differing checksums earns that word.</p>
+<p>That is also why the table's last column counts only the verdicts a rebuild
+decided. A <span class="v unkwn">UNKWN</span> is not evidence in either
+direction, so folding it in would let a bad afternoon at snapshot.debian.org
+read as packages that stopped reproducing. The column names its own
+denominator for that reason, and the <em>checked</em> column beside it counts
+every artifact tried, unknowns included.</p>
 
 <h2>Checking it yourself</h2>
 <p>Nothing here needs to be taken on trust. Every input is published, and the
