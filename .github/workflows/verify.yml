@@ -130,9 +130,13 @@ jobs:
     # `a && b || c` yields c whenever b is falsy, so the obvious spelling with
     # the default first would give every leg the same runner.
     runs-on: ${{ matrix.leg.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    # Three rebuilds of Rust packages, serially, against a service that stalls.
-    # verify.sh bounds each artifact at VERIFY_TIMEOUT; this bounds the leg.
-    timeout-minutes: 240
+    # Rebuilds run serially within a leg, so the leg bound has to cover
+    # MAX_PER_LEG x VERIFY_TIMEOUT or the job is cancelled mid-sweep. At the
+    # 3600s default that is 5 x 60 = 300 minutes; 350 leaves headroom for the
+    # image build and the checkout, and 360 is GitHub's own ceiling for a job.
+    # Raising MAX_PER_LEG past 5 means lowering VERIFY_TIMEOUT to match, not
+    # hoping the packages are small.
+    timeout-minutes: 350
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -155,11 +159,21 @@ jobs:
           LEG_ARCH: ${{ matrix.leg.arch }}
         run: scripts/verify.sh plan.json "$LEG_SUITE" "$LEG_ARCH" verdicts
 
+      # always(), because a leg that fails or is cancelled has still done real
+      # work: verify.sh writes each verdict as it finishes, so a leg that dies
+      # on its fourth rebuild has three worth keeping. Without this the upload
+      # step is skipped and every one of them is thrown away, which is the
+      # expensive kind of loss - each is a rebuild against a rate-limited
+      # service that will not be asked again for days.
       - name: Upload this leg's verdicts
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: verdicts-${{ matrix.leg.suite }}-${{ matrix.leg.arch }}
           path: verdicts/
+          # Still error, not warn. A leg that planned work and wrote nothing
+          # is a failure whether or not the job already failed for its own
+          # reason, and verify.sh refuses that case itself.
           if-no-files-found: error
 
   publish:
