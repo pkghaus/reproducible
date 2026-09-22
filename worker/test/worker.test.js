@@ -22,7 +22,7 @@ import assert from "node:assert/strict";
 import worker, {
   baseVersion, byPackage, inventoryHas, inventoryPackages, listAll,
   loadInventory, loadVerdicts, publishedFor, renderPackage, renderRoot, scanVerdicts,
-  sizeDelta,
+  sizeDelta, historyCells, historyRate, hasMixedHistory, HISTORY_SLOTS,
   resolveRange, summarise, totals, verdictClass, breadcrumb,
 } from "../src/worker.js";
 
@@ -746,4 +746,139 @@ test("a BAD row shows the size delta; a GOOD row does not", () => {
     rebuilt_size: 100, recorded_size: 100,
   }]);
   assert.doesNotMatch(good.slice(0, good.indexOf('<div class="about"')), / B<\/span>/);
+});
+
+// --- verdict history ---------------------------------------------------------
+// A verdict is one word about the most recent rebuild. These are what let the
+// page say whether the package has always answered that way.
+
+const h = (...st) => ({ history: st.map((x, i) => ({ status: x, at: `2026-09-2${i}T00:00:00Z` })) });
+
+test("the strip is padded to a fixed width, oldest first", () => {
+  const cells = historyCells(h("BAD", "GOOD"));
+  assert.equal((cells.match(/<i /g) || []).length, HISTORY_SLOTS);
+  // Three empties, then BAD, then GOOD: padding leads so the newest sits at
+  // the right and the column stays aligned down the table.
+  assert.match(cells, /^(<i class="none"><\/i>){3}<i class="bad"[^>]*><\/i><i class="good"/);
+});
+
+test("a mark names its status in the title, not only by colour", () => {
+  // The mark is a coloured block with no text. Without the status in the
+  // title the only thing distinguishing a failed rebuild from a passing one
+  // is green against red, and the rate beside the strip gives the count but
+  // never which of the five it was.
+  const cells = historyCells(h("GOOD", "BAD", "UNKWN"));
+  for (const status of ["GOOD", "BAD", "UNKWN"]) {
+    assert.match(cells, new RegExp(`<i class="[a-z]+" title="${status} - [^"]+"`));
+  }
+  // Padding carries no title: there is nothing to name.
+  assert.match(cells, /^(<i class="none"><\/i>){2}<i class="good" title=/);
+});
+
+test("an artifact with no history renders as all-empty, not as a failure", () => {
+  // Every verdict written before this feature has no history key at all, and
+  // the whole fleet is in that state on the first deploy.
+  for (const v of [null, {}, { history: null }, { history: [] }]) {
+    assert.equal((historyCells(v).match(/<i class="none">/g) || []).length, HISTORY_SLOTS);
+    assert.equal(historyRate(v), "0/0");
+    assert.equal(hasMixedHistory(v), false);
+  }
+});
+
+test("the rate counts decided rebuilds only", () => {
+  assert.equal(historyRate(h("GOOD", "GOOD", "GOOD")), "3/3");
+  assert.equal(historyRate(h("BAD", "GOOD", "BAD")), "1/3");
+  // An UNKWN is a rebuild that could not be completed. Counting it against
+  // the package would turn a bad afternoon at snapshot.debian.org into a
+  // worse-looking record, which is why the summary column excludes it too.
+  assert.equal(historyRate(h("UNKWN", "GOOD")), "1/1");
+  assert.equal(historyRate(h("UNKWN", "UNKWN")), "0/0");
+});
+
+test("only more than one decided answer counts as mixed", () => {
+  assert.equal(hasMixedHistory(h("GOOD", "GOOD", "GOOD")), false);
+  assert.equal(hasMixedHistory(h("BAD", "BAD")), false);
+  assert.equal(hasMixedHistory(h("BAD", "GOOD")), true);
+  // An UNKWN beside a run of GOODs is not a flap.
+  assert.equal(hasMixedHistory(h("GOOD", "UNKWN", "GOOD")), false);
+});
+
+test("only the last five are kept when more arrive", () => {
+  const many = h("BAD", "BAD", "BAD", "GOOD", "GOOD", "GOOD", "GOOD");
+  assert.equal((historyCells(many).match(/<i /g) || []).length, HISTORY_SLOTS);
+  assert.equal(historyRate(many), "4/5");   // the leading BAD has aged out
+});
+
+test("the package table carries a strip per row", () => {
+  const html = renderPackage("zola", [{
+    package: "zola", suite: "testing", arch: "arm64", status: "BAD",
+    version: "0.23.6-3", rebuilt_sha256: "aaaa", recorded_sha256: "bbbb",
+    history: [{ status: "BAD", at: "x" }, { status: "BAD", at: "y" }, { status: "GOOD", at: "z" }],
+  }]);
+  const table = html.slice(0, html.indexOf('<div class="about"'));
+  assert.match(table, /<th>last five<\/th>/);
+  assert.match(table, /class="hist"/);
+  assert.match(table, /class="rate">1\/3</);
+});
+
+test("the summary names what its percentage measures, and counts mixed windows", () => {
+  const inv = { targets: { "testing/arm64": [{ package: "zola" }] } };
+  const verdicts = [{
+    package: "zola", suite: "testing", arch: "arm64", status: "BAD",
+    history: [{ status: "BAD", at: "x" }, { status: "GOOD", at: "y" }],
+  }];
+  const html = renderRoot(verdicts, inv);
+  const table = html.slice(0, html.indexOf('<div class="about"'));
+  // "reproducible" claimed a property of the archive; the figure is about the
+  // most recent rebuild of each artifact and now says so.
+  assert.doesNotMatch(table, /<th[^>]*>reproducible<\/th>/);
+  assert.match(table, /<th[^>]*>latest rebuild<\/th>/);
+  assert.match(table, /<th[^>]*>mixed<\/th>/);
+
+  const rows = summarise(verdicts, inv);
+  const row = rows.find((r) => r.suite === "testing" && r.arch === "arm64");
+  assert.equal(row.mixed, 1);
+  assert.equal(totals(rows).mixed, 1);
+});
+
+test("the summary's mixed count and a row's non-deterministic are separate", () => {
+  // A verdict that flapped long ago and has since reproduced five times in a
+  // row: `flapped` is permanent, so the row still says non-deterministic,
+  // while the window holds only GOODs and the summary counts it as settled.
+  // Sharing one word between these was the bug this pins.
+  const v = {
+    package: "zola", suite: "testing", arch: "arm64", status: "BAD",
+    version: "0.23.6-1~testing1", flapped: true, checked_at: "2026-10-09T00:00:00Z",
+    history: ["GOOD", "GOOD", "GOOD", "GOOD", "GOOD"].map((status, i) =>
+      ({ status, at: `2026-10-0${i + 1}T00:00:00Z` })),
+  };
+  assert.equal(hasMixedHistory(v), false);
+  assert.equal(totals(summarise([v], null)).mixed, 0);
+  assert.match(renderPackage("zola", [v]), /non-deterministic/);
+});
+
+// A section boundary is 3.5rem of gap with its rule in the middle, set
+// 2026-09-22 across this host, the landing and buildinfos; stats already had
+// it. This host and buildinfos were the 5.5rem pair; the landing was a milder
+// 4rem. Asserted on the rendered page rather than the source string, because
+// what ships is what a reader sees. the estate style registry carries the why.
+test("a section boundary is 3.5rem with its rule centred", () => {
+  const html = renderRoot([], { targets: {} });
+  assert.match(html, /\.about\{[^}]*margin-top:1\.75rem[^}]*padding-top:1\.75rem/);
+  // The tablewrap next to a boundary adds nothing of its own. Its 1.5rem on
+  // top of the boundary's is what made the gap 5.5rem and pushed the rule to
+  // one side of it.
+  assert.match(html, /\.tablewrap:has\(\+ \.about\)\{padding-bottom:0\}/);
+  assert.doesNotMatch(html, /\.about\{[^}]*margin-top:2rem/);
+});
+
+// The section eyebrow. pkg.haus, stats and reproducible all set this rule;
+// buildinfos was the one surface with an h2 that did not, until 2026-09-22.
+// Asserted because a heading style is exactly the kind of thing that gets
+// "tidied" back to a plain size by someone who has not seen the siblings.
+test("section headings use the estate eyebrow", () => {
+  const html = renderRoot([], { targets: {} });
+  assert.match(html, /\.about h2\{[^}]*font-size:\.78rem/);
+  assert.match(html, /\.about h2\{[^}]*text-transform:uppercase/);
+  assert.match(html, /\.about h2::before\{content:"~ ";color:var\(--accent\)\}/);
 });

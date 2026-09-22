@@ -43,7 +43,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=155
+EXPECTED_ASSERTIONS=164
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -1101,6 +1101,113 @@ echo "the diagnostic workflow builds natively and keeps what it produces"
         *"if-no-files-found: error"*) ok "producing nothing is a failure here" ;;
         *) no "producing nothing is a failure here" "not strict" ;;
     esac
+    exit $((fail > 0))
+) || groups_failed=$((groups_failed + 1))
+
+echo "the last few verdicts are carried forward"
+(
+    set +e; shopt -u inherit_errexit
+    hp="$ROOT/scripts/history.py"
+    eq "history.py exists" "yes" "$([ -f "$hp" ] && echo yes || echo no)"
+
+    # new-status new-version prior-json -> the resulting history array
+    run_hist() { # new_status new_version prior_history_json prior_version
+        local nd pd
+        nd="$(mktemp -d)"; pd="$(mktemp -d)"
+        mkdir -p "$nd/testing/arm64" "$pd/testing/arm64"
+        python3 - "$nd/testing/arm64/zola.json" "$1" "$2" <<'PYN'
+import json, sys
+json.dump({"package": "zola", "suite": "testing", "arch": "arm64",
+           "status": sys.argv[2], "version": sys.argv[3],
+           "checked_at": "2026-09-22T09:00:00Z"},
+          open(sys.argv[1], "w"), indent=2, sort_keys=True)
+PYN
+        if [ -n "$3" ]; then
+            python3 - "$pd/testing/arm64/zola.json" "$3" "$4" <<'PYP'
+import json, sys
+json.dump({"package": "zola", "suite": "testing", "arch": "arm64",
+           "status": "GOOD", "version": sys.argv[3],
+           "history": json.loads(sys.argv[2])},
+          open(sys.argv[1], "w"), indent=2, sort_keys=True)
+PYP
+        fi
+        python3 "$hp" "$nd" "$pd" >/dev/null 2>&1
+        python3 -c "
+import json,sys
+d=json.load(open('$nd/testing/arm64/zola.json'))
+print(','.join(e['status'] for e in d.get('history',[])))"
+        rm -rf "$nd" "$pd"
+    }
+
+    H3='[{"status":"BAD","at":"a"},{"status":"BAD","at":"b"},{"status":"GOOD","at":"c"}]'
+    eq "this run's outcome is appended, newest last" \
+       "BAD,BAD,GOOD,BAD" "$(run_hist BAD 1.0-1 "$H3" 1.0-1)"
+    eq "no prior verdict starts a one-entry history" \
+       "GOOD" "$(run_hist GOOD 1.0-1 "" "")"
+
+    # A new version is a different file. Carrying the old one's failures across
+    # would make a fix unprovable, which is the same scoping sticky-bad.py uses.
+    eq "a version change resets the history" \
+       "GOOD" "$(run_hist GOOD 1.0-2 "$H3" 1.0-1)"
+
+    # Five, because that is what it takes to be unconvinced by luck on a leg
+    # that fails half the time.
+    H6='[{"status":"GOOD","at":"a"},{"status":"GOOD","at":"b"},{"status":"GOOD","at":"c"},{"status":"GOOD","at":"d"},{"status":"GOOD","at":"e"},{"status":"GOOD","at":"f"}]'
+    eq "the window is capped at five" \
+       "GOOD,GOOD,GOOD,GOOD,GOOD" "$(run_hist GOOD 1.0-1 "$H6" 1.0-1)"
+
+    # An UNKWN is recorded. The page decides what to count; dropping it here
+    # would hide that a rebuild was attempted at all.
+    eq "an UNKWN is stored like any other outcome" \
+       "BAD,BAD,GOOD,UNKWN" "$(run_hist UNKWN 1.0-1 "$H3" 1.0-1)"
+    exit $((fail > 0))
+) || groups_failed=$((groups_failed + 1))
+
+echo "history survives a sticky BAD, and runs before it"
+(
+    set +e; shopt -u inherit_errexit
+
+    # Order is load-bearing. history.py writes the merged array onto THIS run's
+    # verdict; sticky-bad.py may then discard that verdict in favour of the
+    # prior one. Reversed, a sticky BAD would publish a history missing the
+    # rebuild that just happened.
+    pub="$(cat "$ROOT/scripts/publish.sh")"
+    h_at="$(printf '%s\n' "$pub" | grep -n 'history.py' | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1)"
+    s_at="$(printf '%s\n' "$pub" | grep -n 'sticky-bad.py' | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1)"
+    if [ -n "$h_at" ] && [ -n "$s_at" ] && [ "$h_at" -lt "$s_at" ]; then
+        ok "publish.sh runs history.py before sticky-bad.py"
+    else
+        no "publish.sh runs history.py before sticky-bad.py" \
+           "history at ${h_at:-none}, sticky at ${s_at:-none}"
+    fi
+
+    # And the carry itself: a sticky BAD keeps the prior object, so it has to
+    # take the new object's history with it.
+    nd="$(mktemp -d)"; pd="$(mktemp -d)"
+    mkdir -p "$nd/testing/arm64" "$pd/testing/arm64"
+    python3 - "$nd/testing/arm64/z.json" <<'PYA'
+import json, sys
+json.dump({"package":"z","suite":"testing","arch":"arm64","status":"GOOD",
+           "version":"1.0-1","checked_at":"2026-09-22T09:00:00Z",
+           "history":[{"status":"BAD","at":"a"},{"status":"GOOD","at":"b"}]},
+          open(sys.argv[1],"w"), indent=2, sort_keys=True)
+PYA
+    python3 - "$pd/testing/arm64/z.json" <<'PYB'
+import json, sys
+json.dump({"package":"z","suite":"testing","arch":"arm64","status":"BAD",
+           "version":"1.0-1","checked_at":"2026-09-21T09:00:00Z",
+           "history":[{"status":"BAD","at":"a"}]},
+          open(sys.argv[1],"w"), indent=2, sort_keys=True)
+PYB
+    python3 "$ROOT/scripts/sticky-bad.py" "$nd" "$pd" >/dev/null 2>&1
+    out="$(cat "$nd/testing/arm64/z.json")"
+    case "$out" in
+        *'"status": "BAD"'*) ok "the BAD is still what gets published" ;;
+        *) no "the BAD is still what gets published" "json was [$out]" ;;
+    esac
+    eq "and it carries the newer two-entry history" "2" \
+       "$(printf '%s' "$out" | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("history",[])))')"
+    rm -rf "$nd" "$pd"
     exit $((fail > 0))
 ) || groups_failed=$((groups_failed + 1))
 

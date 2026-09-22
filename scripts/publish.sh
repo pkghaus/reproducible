@@ -96,6 +96,12 @@ count="$(validate_verdicts "$VERDICT_DIR")"
 prior_dir="$(mktemp -d)"
 trap 'rm -rf "$prior_dir"' EXIT
 aws_ s3 sync "s3://$R2_BUCKET/verify/" "$prior_dir/" --only-show-errors
+
+# Order matters. history.py writes the merged array onto THIS run's verdicts,
+# then sticky-bad.py may replace one of them with the prior object and copies
+# that array across. Reversed, a sticky BAD would publish the prior verdict's
+# history and lose the observation this run just made.
+python3 "$(dirname "${BASH_SOURCE[0]}")/history.py" "$VERDICT_DIR" "$prior_dir"
 python3 "$(dirname "${BASH_SOURCE[0]}")/sticky-bad.py" "$VERDICT_DIR" "$prior_dir"
 
 printf 'uploading %s verdict(s) to s3://%s/verify/\n' "$count" "$R2_BUCKET" >&2

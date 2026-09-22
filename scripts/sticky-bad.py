@@ -54,9 +54,14 @@ def merge(new, prior):
             out = dict(new)
             out["flapped"] = True
             return out
-        return None
+        return None  # `new` already carries the merged history
 
     out = dict(prior)
+    # history.py has already merged this run's observation onto `new`, and
+    # `new` is what gets discarded here, so the array has to come across or a
+    # sticky BAD would publish a history missing its most recent rebuild.
+    if "history" in new:
+        out["history"] = new["history"]
     out["last_rebuild_status"] = new.get("status")
     out["last_rebuild_at"] = new.get("checked_at")
     out["last_rebuild_run"] = new.get("run")

@@ -94,7 +94,11 @@ h1 a{color:inherit;text-decoration:none}
 h1 a:hover{text-decoration:underline;text-decoration-color:var(--accent);text-underline-offset:.18em;text-decoration-thickness:.07em}
 .tagline{flex-basis:100%;color:var(--muted);margin:.75rem 0 0;max-width:38rem}
 .tablewrap{overflow-x:auto;padding:1.5rem 0}
-.tablewrap:has(+ footer){padding-bottom:0}
+/* A tablewrap followed by a section boundary adds nothing of its own: the
+   boundary supplies the space. Without this a table ending a section sat
+   5.5rem from the next heading where stats.pkg.haus used 3.5rem, and the
+   rule was pushed to one side of the gap instead of sitting in it. */
+.tablewrap:has(+ footer),.tablewrap:has(+ .about){padding-bottom:0}
 table{border-collapse:collapse;width:100%;font-size:.92rem}
 th,td{text-align:left;padding:.5rem .75rem .5rem 0;
 border-bottom:1px dashed var(--line);vertical-align:top}
@@ -123,6 +127,18 @@ white-space:nowrap}
 td.pkg{font-family:var(--mono);white-space:nowrap}
 td.ver{font-family:var(--mono);font-size:.85rem;color:var(--muted);white-space:nowrap}
 td.tgt{white-space:nowrap}
+/* The strip: one mark per stored rebuild, oldest at the left, padded to a
+   fixed width so the column stays aligned down the table and the empty marks
+   say how much is not yet known. Marks rather than a second word, because a
+   word per rebuild would not survive six rows. */
+.hist{display:flex;gap:3px;align-items:center}
+.hist i{display:block;width:.5rem;height:1.1rem;border-radius:1px}
+.hist i.good{background:var(--ok)}
+.hist i.bad{background:var(--accent-text)}
+.hist i.unkwn{background:var(--chg)}
+.hist i.none{background:var(--line)}
+.rate{font-family:var(--mono);font-size:.72rem;color:var(--muted);
+margin-left:.5rem;white-space:nowrap;font-variant-numeric:tabular-nums}
 /* The matrix cell: six verdicts on one row, suite-major. A fixed column width
    keeps them aligned down the table without a nested table's row rules. */
 .matrix{display:flex;gap:.55rem;flex-wrap:wrap}
@@ -139,7 +155,7 @@ td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:now
 tr.tot td{border-top:2px solid var(--ink);border-bottom:none;padding-top:.6rem}
 tr.tot td.size{color:var(--ink)}
 
-.about{border-top:1px solid var(--line);margin-top:2rem;padding-top:2rem}
+.about{border-top:1px solid var(--line);margin-top:1.75rem;padding-top:1.75rem}
 .about h2{font-family:var(--mono);font-size:.78rem;font-weight:600;
 letter-spacing:.16em;text-transform:uppercase;color:var(--muted);
 margin:1.75rem 0 .6rem}
@@ -227,6 +243,63 @@ export function baseVersion(v) {
   return String(v).replace(/~(haus\d+\+\d+|testing\d+)$/, "");
 }
 
+// The last few rebuilds of one artifact, oldest first, as marks. A verdict is
+// one word about the most recent rebuild, and that word cannot say whether the
+// package has always answered that way: on 2026-09-22 this page read 216/216
+// GOOD one rebuild after two arm64 legs had been flipping a coin, and nothing
+// distinguished "reproduced, and always has" from "reproduced once".
+//
+// Padded to HISTORY_SLOTS so every strip is the same width down the column and
+// the empty marks say how much is not yet known.
+export const HISTORY_SLOTS = 5;
+
+export function historyCells(v) {
+  const h = Array.isArray(v && v.history) ? v.history : [];
+  const recent = h.slice(-HISTORY_SLOTS);
+  const pad = HISTORY_SLOTS - recent.length;
+  const marks = [];
+  for (let i = 0; i < pad; i += 1) marks.push('<i class="none"></i>');
+  // The title carries the STATUS as well as the time. The mark itself is a
+  // coloured block and nothing else, so without this the only thing saying
+  // which of the five failed is a green/red distinction - the rate beside
+  // them gives the count but never the position.
+  for (const e of recent) {
+    const status = (e && e.status) || "?";
+    const when = (e && e.at) || "unknown time";
+    marks.push(`<i class="${verdictClass(e && e.status)}"`
+      + ` title="${esc(`${status} - ${when}`)}"></i>`);
+  }
+  return marks.join("");
+}
+
+// Decided rebuilds only, matching the summary column: an UNKWN is a rebuild
+// that could not be completed, so counting it against the package would turn a
+// bad afternoon at snapshot.debian.org into a worse-looking record.
+export function historyRate(v) {
+  const h = Array.isArray(v && v.history) ? v.history : [];
+  const recent = h.slice(-HISTORY_SLOTS);
+  const decided = recent.filter((e) => e && (e.status === "GOOD" || e.status === "BAD"));
+  if (!decided.length) return "0/0";
+  return `${decided.filter((e) => e.status === "GOOD").length}/${decided.length}`;
+}
+
+// True when the stored window holds more than one decided answer.
+//
+// Deliberately NOT called "flapped". A verdict carries its own `flapped`
+// field, set by sticky-bad.py when a BAD is later followed by a GOOD, and it
+// is permanent - that is what puts "non-deterministic" on a package row. This
+// one is a property of the last five rebuilds and goes false again once the
+// odd one out scrolls off the end. Both are worth showing; sharing a word
+// would have made the summary read 0 next to a row still labelled
+// non-deterministic.
+export function hasMixedHistory(v) {
+  const h = Array.isArray(v && v.history) ? v.history : [];
+  const decided = h.slice(-HISTORY_SLOTS)
+    .filter((e) => e && (e.status === "GOOD" || e.status === "BAD"))
+    .map((e) => e.status);
+  return new Set(decided).size > 1;
+}
+
 export function verdictClass(status) {
   return { GOOD: "good", BAD: "bad", UNKWN: "unkwn" }[status] || "none";
 }
@@ -259,6 +332,10 @@ export function summarise(verdicts, inventory) {
         checked: hits.length,
         published: publishedFor(inventory, suite, arch),
         pct: decided ? Math.round((counts.GOOD / decided) * 1000) / 10 : null,
+        // Artifacts whose stored window holds both answers. The percentage
+        // above is about the latest rebuild of each; this is the count for
+        // which "the latest rebuild" is not the whole story.
+        mixed: hits.filter(hasMixedHistory).length,
       });
     }
   }
@@ -280,6 +357,7 @@ export function totals(rows) {
   return {
     GOOD: good, BAD: sum("BAD"), UNKWN: sum("UNKWN"),
     checked: sum("checked"), published: sum("published"),
+    mixed: sum("mixed"),
     pct: decided ? Math.round((good / decided) * 1000) / 10 : null,
   };
 }
@@ -306,16 +384,18 @@ function summaryTable(rows, tot) {
     `<td class="tgt"><code>${esc(r.arch)}</code></td>` +
     `<td class="size pct">${r.checked} / ${r.published}</td>` +
     countCells(r) +
-    `<td class="size pct">${pctCell(r)}</td></tr>`).join("\n");
+    `<td class="size pct">${pctCell(r)}</td>` +
+    `<td class="num"><span class="v ${r.mixed ? "unkwn" : "none"}">${r.mixed}</span></td></tr>`).join("\n");
   const total = `<tr class="tot"><td class="tgt"><code>all</code></td>` +
     `<td class="tgt"><code>all</code></td>` +
     `<td class="size pct">${tot.checked} / ${tot.published}</td>` +
     countCells(tot) +
-    `<td class="size pct">${pctCell(tot)}</td></tr>`;
+    `<td class="size pct">${pctCell(tot)}</td>` +
+    `<td class="num"><span class="v ${tot.mixed ? "unkwn" : "none"}">${tot.mixed}</span></td></tr>`;
   return `<div class="tablewrap"><table>
 <thead><tr><th>suite</th><th>arch</th><th class="size">checked</th>
 <th class="num">good</th><th class="num">bad</th><th class="num">unkwn</th>
-<th class="size">reproducible</th></tr></thead>
+<th class="size">latest rebuild</th><th class="num">mixed</th></tr></thead>
 <tbody>${body}\n${total}</tbody></table></div>`;
 }
 
@@ -397,6 +477,21 @@ about every rebuild of a file that never changes, so one differing rebuild
 settles it, and a later matching rebuild does not take it back: it means the
 build is <span class="v unkwn">non-deterministic</span>, which the row then
 says. A new version starts clean, because that is a different file.</p>
+<p><strong>A verdict is about the most recent rebuild only.</strong> The
+<em>last five</em> column carries the ones before it, oldest at the left, so a
+package that has always reproduced can be told from one that reproduced this
+time. The figure beside them counts decided rebuilds, on the same grounds the
+summary does: an <span class="v unkwn">UNKWN</span> means the rebuild could not
+be completed, not that the package failed. The <em>mixed</em> count in the
+summary is how many artifacts gave more than one answer in that window, which
+is the number to read before trusting a green one. It is not the same as
+<span class="v unkwn">non-deterministic</span> on a row: that one is permanent
+once a rebuild has contradicted an earlier one, while this counts only what is
+still inside the last five. An empty strip means no
+rebuild has been recorded for that artifact yet, which is the normal state for
+a package just enrolled or a version just bumped: the sweep reaches each
+target in turn, so the column fills in over the days after a change rather
+than at once.</p>
 <p><strong><span class="v unkwn">UNKWN</span> is not a soft failure.</strong> snapshot.debian.org is a
 rate-limited volunteer service that times out under load, and a build
 dependency can stop being resolvable years after the fact. Recording either as
@@ -497,18 +592,23 @@ export function renderPackage(name, verdicts) {
       return `<tr><td class="tgt"><code>${esc(suite)}</code></td>` +
         `<td class="tgt"><code>${esc(arch)}</code></td>` +
         `<td>${verdictCell(null, "not yet checked")}</td>` +
+        `<td><div class="hist">${historyCells(null)}` +
+        `<span class="rate">0/0</span></div></td>` +
         `<td colspan="2" class="ver">not yet checked</td></tr>`;
     }
     const detail = detailCell(v);
     return `<tr><td class="tgt"><code>${esc(suite)}</code></td>` +
       `<td class="tgt"><code>${esc(arch)}</code></td>` +
       `<td>${verdictCell(v.status, v.debrebuild || v.status)}</td>` +
+      `<td><div class="hist">${historyCells(v)}` +
+      `<span class="rate">${historyRate(v)}</span></div></td>` +
       `<td class="ver">${esc(v.version)}</td>` +
       `<td class="ver">${detail}</td></tr>`;
   }).join("\n");
   const inner = `<div class="tablewrap"><table>
-<thead><tr><th>suite</th><th>arch</th><th>verdict</th><th>version</th>
-<th>rebuilt / recorded sha256</th></tr></thead><tbody>${body}</tbody></table></div>`;
+<thead><tr><th>suite</th><th>arch</th><th>verdict</th><th>last five</th>
+<th>version</th><th>rebuilt / recorded sha256</th></tr></thead>
+<tbody>${body}</tbody></table></div>`;
   const tagline = `Reproducibility of <code>${esc(name)}</code> across every suite and architecture the archive serves.`;
   return page(`reproducible.pkg.haus/${name}`,
     header(name, tagline) + inner + ABOUT);
