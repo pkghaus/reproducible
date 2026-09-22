@@ -40,8 +40,17 @@
 set -euo pipefail
 shopt -s inherit_errexit
 
-DIAG_URL="${1:?usage: $0 <buildinfo-url> <outdir>}"
-DIAG_OUTDIR="${2:?usage: $0 <buildinfo-url> <outdir>}"
+DIAG_URL="${1:?usage: $0 <buildinfo-url> <outdir> [builds]}"
+DIAG_OUTDIR="${2:?usage: $0 <buildinfo-url> <outdir> [builds]}"
+# How many builds to make and compare. Three rather than two because each
+# extra build is a cheaper way to buy odds than another whole run: if a build
+# lands in one of two states with even probability, two builds miss the flap
+# half the time and three miss it a quarter of the time, for one extra
+# twelve-minute build instead of another twenty-five-minute run.
+DIAG_BUILDS="${3:-3}"
+case "$DIAG_BUILDS" in
+    ''|*[!0-9]*|0|1) echo "FATAL: builds must be an integer of 2 or more" >&2; exit 1 ;;
+esac
 
 DIAG_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
@@ -126,12 +135,12 @@ extract_binary() { # build-dir -> path on stdout
         -printf '%s\t%p\n' | sort -rn | head -1 | cut -f2-
 }
 
-for i in 1 2; do
+for i in $(seq 1 "$DIAG_BUILDS"); do
     d="$work/b$i"
     mkdir -p "$d"
     cp "$inputs"/* "$d/"
-    echo "build $i of 2 (its checksum comparison is expected to fail: an" >&2
-    echo "  unstripped binary cannot match a stripped record)" >&2
+    echo "build $i of $DIAG_BUILDS (its checksum comparison is expected to fail:" >&2
+    echo "  an unstripped binary cannot match a stripped record)" >&2
     set +e
     "$DIAG_ROOT/verify/rebuild.sh" "$d" > "$d/rebuild.log" 2>&1
     set -e
@@ -151,8 +160,24 @@ for i in 1 2; do
     echo "  build $i: ${bin##*/} $(stat -c %s "$bin") bytes" >&2
 done
 
+# Compare build 1 against each later build and take the first that differs.
+# All-identical is a real result and gets reported as one; it is also the
+# thing to watch, because this configuration is not the shipped one and a
+# configuration that never flaps cannot be used to find the flap.
 a="$(cat "$work/b1/binpath")"
-b="$(cat "$work/b2/binpath")"
+b=""
+for i in $(seq 2 "$DIAG_BUILDS"); do
+    cand="$(cat "$work/b$i/binpath")"
+    if ! cmp -s "$a" "$cand"; then
+        b="$cand"
+        echo "  builds 1 and $i differ" >&2
+        break
+    fi
+    echo "  builds 1 and $i are identical" >&2
+done
+if [ -z "$b" ]; then
+    b="$(cat "$work/b2/binpath")"
+fi
 cp "$a" "$DIAG_OUTDIR/build1.unstripped"
 cp "$b" "$DIAG_OUTDIR/build2.unstripped"
 readelf -sW "$a" > "$DIAG_OUTDIR/symbols.txt"
@@ -193,9 +218,14 @@ say(f"build 2: {len(db)} bytes")
 
 if da == db:
     say("")
-    say("IDENTICAL: this pair caught no flap. The package fails roughly half")
-    say("the time, so that is the expected outcome about half of all runs.")
-    say("Run the workflow again.")
+    say("IDENTICAL: no pair in this run differed. The package fails roughly")
+    say("half the time, so a run catching nothing is expected sometimes.")
+    say("")
+    say("Watch the streak, though. Every all-identical run halves the")
+    say("bad-luck explanation and raises the other one: this configuration")
+    say("keeps symbols, which already moved .text by 19,456 bytes, so it")
+    say("may simply not flap. A configuration that never flaps cannot be")
+    say("used to find the flap, however many times it is run.")
     open(out, "w").write("\n".join(lines) + "\n")
     sys.exit(0)
 

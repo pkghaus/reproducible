@@ -43,7 +43,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=152
+EXPECTED_ASSERTIONS=155
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -1004,8 +1004,33 @@ BIFIX
     # published one is a cross-build offset translation, and it was wrong:
     # keeping symbols moved .text by 19,456 bytes on zola/arm64, so the
     # offset pointed at different code.
-    eq "it builds twice" "1" \
-       "$(printf '%s\n' "$body" | grep -c '^for i in 1 2; do')"
+    # No '$' inside a single-quoted grep pattern anywhere in this file. It is
+    # read as a missed expansion (SC2016), this repo's lint has no severity
+    # filter, and the job fails. Match around the sigils instead.
+    #
+    # And do not begin such a note with the linter's own name: a comment whose
+    # first word after '#' is that name is parsed as a directive, which is
+    # SC1072/SC1073 and also fails.
+    eq "it builds more than once" "1" \
+       "$(printf '%s\n' "$body" | grep -c '^for i in .*seq 1 .*DIAG_BUILDS')"
+    # Three by default, not two. Each extra build buys odds more cheaply than
+    # another whole run: two builds miss an even-odds flap half the time,
+    # three miss it a quarter of the time, for one extra build instead of a
+    # second twenty-five-minute run.
+    eq "the default build count is at least three" "yes" \
+       "$(printf '%s\n' "$body" | grep -qE 'DIAG_BUILDS=.*:-[3-9]' && echo yes || echo no)"
+    # One build cannot be compared with anything, so it has to be refused
+    # rather than silently comparing a binary with itself.
+    case "$body" in
+        *"builds must be an integer of 2 or more"*) ok "fewer than two builds is refused" ;;
+        *) no "fewer than two builds is refused" "no guard" ;;
+    esac
+    # An all-identical run must point at the alternative explanation, or a
+    # streak of them reads as bad luck forever.
+    case "$body" in
+        *"may simply not flap"*) ok "an all-identical run names the other explanation" ;;
+        *) no "an all-identical run names the other explanation" "no caveat" ;;
+    esac
     case "$body" in
         *"no offset has to be"*|*"cross-build offset translation"*|*"Two builds in one configuration"*)
             ok "and says why one build against the published one is wrong" ;;
