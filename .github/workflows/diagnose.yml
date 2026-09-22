@@ -2,8 +2,9 @@ name: Diagnose
 
 # Names the functions a non-deterministic build disagrees with itself about.
 #
-# It builds one record TWICE with symbols kept and diffs the two against each
-# other. Every binary the archive ships is stripped, so an offset in .text
+# It builds one record SEVERAL times with symbols kept and diffs the results
+# against each other; three by default, because an extra build buys odds more
+# cheaply than an extra run. Every binary the archive ships is stripped, so an offset in .text
 # resolves to nothing, and the obvious fix -- one build with symbols, mapped
 # against the published one -- does not work: measured 2026-09-21 on
 # zola/arm64, keeping symbols made .text 19,456 bytes longer, so the offset
@@ -68,7 +69,7 @@ jobs:
           persist-credentials: false
 
       # Every expression through env:, none inside the run: block.
-      - name: Build twice with symbols and diff them
+      - name: Build repeatedly with symbols and diff the results
         env:
           IN_URL: ${{ inputs.buildinfo_url }}
         run: scripts/diagnose.sh "$IN_URL" out
