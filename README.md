@@ -1,18 +1,18 @@
-# reproducible.pkg.haus
+# reproducible
 
-Whether each package in the [pkg.haus](https://apt.pkg.haus) archive rebuilds
-byte-for-byte from its own build record.
+Whether each package in the [pkg.haus](https://pkg.haus) archive rebuilds
+byte-for-byte from its own build record, published at
+[reproducible.pkg.haus](https://reproducible.pkg.haus).
 
-**https://reproducible.pkg.haus**. The verdicts are also machine readable:
-`/verify/<suite>/<arch>/<package>.json` for one artifact, `/inventory.json`
-for what the archive publishes.
+The verdicts are also machine readable: `/verify/<suite>/<arch>/<package>.json`
+for one artifact, `/inventory.json` for what the archive publishes.
 
 ## The three words
 
 The vocabulary is [rebuilderd](https://github.com/kpcyrd/rebuilderd)'s, so this
 page reads the same way as reproducible.archlinux.org and reproduce.debian.net.
 
-| | |
+| Verdict | Meaning |
 |---|---|
 | `GOOD` | `debrebuild` compared every recorded checksum and they matched. |
 | `BAD` | `debrebuild` compared them and one differed. |
