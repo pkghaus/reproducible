@@ -276,11 +276,17 @@ export function historyCells(v) {
 // that could not be completed, so counting it against the package would turn a
 // bad afternoon at snapshot.debian.org into a worse-looking record.
 export function historyRate(v) {
-  const h = Array.isArray(v && v.history) ? v.history : [];
-  const recent = h.slice(-HISTORY_SLOTS);
-  const decided = recent.filter((e) => e && (e.status === "GOOD" || e.status === "BAD"));
+  const decided = decidedWindow(v);
   if (!decided.length) return "0/0";
-  return `${decided.filter((e) => e.status === "GOOD").length}/${decided.length}`;
+  return `${decided.filter((s) => s === "GOOD").length}/${decided.length}`;
+}
+
+// The GOOD/BAD statuses in the stored window, oldest first.
+function decidedWindow(v) {
+  const h = Array.isArray(v && v.history) ? v.history : [];
+  return h.slice(-HISTORY_SLOTS)
+    .filter((e) => e && (e.status === "GOOD" || e.status === "BAD"))
+    .map((e) => e.status);
 }
 
 // True when the stored window holds more than one decided answer.
@@ -293,11 +299,7 @@ export function historyRate(v) {
 // would have made the summary read 0 next to a row still labelled
 // non-deterministic.
 export function hasMixedHistory(v) {
-  const h = Array.isArray(v && v.history) ? v.history : [];
-  const decided = h.slice(-HISTORY_SLOTS)
-    .filter((e) => e && (e.status === "GOOD" || e.status === "BAD"))
-    .map((e) => e.status);
-  return new Set(decided).size > 1;
+  return new Set(decidedWindow(v)).size > 1;
 }
 
 export function verdictClass(status) {
@@ -336,6 +338,8 @@ export function summarise(verdicts, inventory) {
         // above is about the latest rebuild of each; this is the count for
         // which "the latest rebuild" is not the whole story.
         mixed: hits.filter(hasMixedHistory).length,
+        // Only these can be mixed, so this is mixed's denominator.
+        comparable: hits.filter((v) => decidedWindow(v).length > 1).length,
       });
     }
   }
@@ -357,7 +361,7 @@ export function totals(rows) {
   return {
     GOOD: good, BAD: sum("BAD"), UNKWN: sum("UNKWN"),
     checked: sum("checked"), published: sum("published"),
-    mixed: sum("mixed"),
+    mixed: sum("mixed"), comparable: sum("comparable"),
     pct: decided ? Math.round((good / decided) * 1000) / 10 : null,
   };
 }
@@ -370,6 +374,13 @@ export function totals(rows) {
 function pctCell(r) {
   if (r.pct === null) return "-";
   return `${r.pct}% of ${r.GOOD + r.BAD}`;
+}
+
+// A bare 0 reads as nothing having disagreed even when nothing has been
+// rebuilt twice, so the count names how many artifacts could have.
+function mixedCell(r) {
+  return `<td class="size pct"><span class="v ${r.mixed ? "unkwn" : "none"}">${r.mixed}</span>` +
+    ` of ${r.comparable}</td>`;
 }
 
 function countCells(r) {
@@ -385,17 +396,17 @@ function summaryTable(rows, tot) {
     `<td class="size pct">${r.checked} / ${r.published}</td>` +
     countCells(r) +
     `<td class="size pct">${pctCell(r)}</td>` +
-    `<td class="num"><span class="v ${r.mixed ? "unkwn" : "none"}">${r.mixed}</span></td></tr>`).join("\n");
+    `${mixedCell(r)}</tr>`).join("\n");
   const total = `<tr class="tot"><td class="tgt"><code>all</code></td>` +
     `<td class="tgt"><code>all</code></td>` +
     `<td class="size pct">${tot.checked} / ${tot.published}</td>` +
     countCells(tot) +
     `<td class="size pct">${pctCell(tot)}</td>` +
-    `<td class="num"><span class="v ${tot.mixed ? "unkwn" : "none"}">${tot.mixed}</span></td></tr>`;
+    `${mixedCell(tot)}</tr>`;
   return `<div class="tablewrap"><table>
 <thead><tr><th>suite</th><th>arch</th><th class="size">checked</th>
 <th class="num">good</th><th class="num">bad</th><th class="num">unkwn</th>
-<th class="size">latest rebuild</th><th class="num">mixed</th></tr></thead>
+<th class="size">latest rebuild</th><th class="size">mixed</th></tr></thead>
 <tbody>${body}\n${total}</tbody></table></div>`;
 }
 
@@ -484,7 +495,10 @@ time. The figure beside them counts decided rebuilds, on the same grounds the
 summary does: an <span class="v unkwn">UNKWN</span> means the rebuild could not
 be completed, not that the package failed. The <em>mixed</em> count in the
 summary is how many artifacts gave more than one answer in that window, which
-is the number to read before trusting a green one. It is not the same as
+is the number to read before trusting a green one. It is counted out of the
+artifacts with at least two decided rebuilds in the window, the only ones that
+could disagree, so <em>0 of 0</em> means nothing has been compared yet rather
+than that nothing disagreed. It is not the same as
 <span class="v unkwn">non-deterministic</span> on a row: that one is permanent
 once a rebuild has contradicted an earlier one, while this counts only what is
 still inside the last five. An empty strip means no

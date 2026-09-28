@@ -839,6 +839,42 @@ test("the summary names what its percentage measures, and counts mixed windows",
   const row = rows.find((r) => r.suite === "testing" && r.arch === "arm64");
   assert.equal(row.mixed, 1);
   assert.equal(totals(rows).mixed, 1);
+  assert.equal(row.comparable, 1);
+  assert.equal(totals(rows).comparable, 1);
+});
+
+test("mixed is counted out of the artifacts with two decided rebuilds to compare", () => {
+  const v = (package_, ...statuses) => ({
+    package: package_, suite: "trixie", arch: "amd64", status: statuses.at(-1) || "GOOD",
+    history: statuses.map((status, i) => ({ status, at: `t${i}` })),
+  });
+  const verdicts = [
+    v("none"),                    // no history at all
+    v("one", "GOOD"),             // one rebuild: nothing to disagree with
+    v("unkwn", "GOOD", "UNKWN"),  // one DECIDED rebuild
+    v("agree", "GOOD", "GOOD"),
+    v("differ", "BAD", "GOOD"),
+  ];
+  const row = summarise(verdicts, null).find((r) => r.suite === "trixie" && r.arch === "amd64");
+  assert.equal(row.comparable, 2);
+  assert.equal(row.mixed, 1);
+});
+
+test("a mixed count with nothing to compare reads 0 of 0, not a bare 0", () => {
+  // Days after the history started, every artifact held at most one rebuild,
+  // and a bare 0 under "mixed" read as nothing having disagreed.
+  const inv = { targets: { "trixie/amd64": [{ package: "d2" }] } };
+  const verdicts = [{
+    package: "d2", suite: "trixie", arch: "amd64", status: "GOOD",
+    history: [{ status: "GOOD", at: "2026-09-24T09:20:46Z" }],
+  }];
+  const html = renderRoot(verdicts, inv);
+  const table = html.slice(0, html.indexOf('<div class="about"'));
+  const trixie = table.split("<tr>").find((r) => r.includes("<code>trixie</code>")
+    && r.includes("<code>amd64</code>"));
+  assert.match(trixie, /<span class="v none">0<\/span> of 0<\/td><\/tr>/);
+  const all = table.slice(table.indexOf('<tr class="tot">'));
+  assert.match(all, /<span class="v none">0<\/span> of 0<\/td><\/tr>/);
 });
 
 test("the summary's mixed count and a row's non-deterministic are separate", () => {
