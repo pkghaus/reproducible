@@ -10,9 +10,9 @@
 //
 // The page furniture below is a COPY of buildinfos.pkg.haus's, which is a copy
 // of apt.pkg.haus's, not an approximation. Three hosts, one surface, and a
-// reader moves between them. the estate style registry records it; when a
-// surface and that page disagree, one of them is wrong and it gets fixed in the
-// same change.
+// reader moves between them. The estate style registry records it; when a
+// surface and the registry disagree, one of them is wrong and it gets fixed in
+// the same change.
 
 const PREFIX = "verify/";
 
@@ -69,7 +69,7 @@ const STYLE = `
 --accent-text:#CC3B18;--code-bg:#F7F6F3;
 /* The news chips' green and amber, reused: GOOD is the archive's "added",
    UNKWN its "updated". BAD takes --accent-text, which the chips give security.
-   Registered as consumers in web-style.md's optional-token table. */
+   The estate style registry lists this host as a consumer of both. */
 --ok:#4A7C3A;--chg:#8A6012;
 --mono:ui-monospace,Menlo,Consolas,monospace}
 @media(prefers-color-scheme:dark){:root{

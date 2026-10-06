@@ -897,7 +897,7 @@ test("the summary's mixed count and a row's non-deterministic are separate", () 
 // 2026-09-22 across this host, the landing and buildinfos; stats already had
 // it. This host and buildinfos were the 5.5rem pair; the landing was a milder
 // 4rem. Asserted on the rendered page rather than the source string, because
-// what ships is what a reader sees. the estate style registry carries the why.
+// what ships is what a reader sees. The estate style registry carries the why.
 test("a section boundary is 3.5rem with its rule centred", () => {
   const html = renderRoot([], { targets: {} });
   assert.match(html, /\.about\{[^}]*margin-top:1\.75rem[^}]*padding-top:1\.75rem/);
