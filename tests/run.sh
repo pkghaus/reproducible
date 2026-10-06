@@ -999,7 +999,7 @@ BIFIX
     body="$(cat "$dg")"
     # The answer is only as good as the claim that both builds laid out .text
     # the same way, so the script has to check that rather than assume it.
-    # Two builds, diffed against each other. A single build mapped against the
+    # Several builds, diffed against each other. A single build mapped against the
     # published one is a cross-build offset translation, and it was wrong:
     # keeping symbols moved .text by 19,456 bytes on zola/arm64, so the
     # offset pointed at different code.
@@ -1035,8 +1035,8 @@ BIFIX
             ok "and says why one build against the published one is wrong" ;;
         *) no "and says why one build against the published one is wrong" "rationale absent" ;;
     esac
-    # An identical pair is a RESULT, not a failure: this package flaps about
-    # half the time, so half of all runs legitimately catch nothing.
+    # An all-identical run is a RESULT, not a failure: this package flaps about
+    # half the time, so a quarter of three-build runs legitimately catch nothing.
     case "$body" in
         *IDENTICAL*) ok "an identical pair is reported rather than failed" ;;
         *) no "an identical pair is reported rather than failed" "no identical branch" ;;
