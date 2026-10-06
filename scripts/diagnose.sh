@@ -54,15 +54,9 @@ esac
 
 DIAG_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# DIAG_ prefixes, and they are not decoration. verify.sh assigns OUTDIR and
-# ROOT from its own arguments at the top of the file, before the guard that
-# makes it sourceable, so the placeholders below OVERWRITE anything this
-# script has already put there. An earlier version kept its output directory
-# in OUTDIR; every run wrote to `x/` while the workflow looked in `out/` and
-# failed the upload after a twelve-minute rebuild.
-#
+# DIAG_ keeps these names clear of anything verify.sh assigns when sourced.
 # shellcheck source=scripts/verify.sh
-. "$DIAG_ROOT/scripts/verify.sh" x x x x
+. "$DIAG_ROOT/scripts/verify.sh"
 
 mkdir -p "$DIAG_OUTDIR"
 DIAG_OUTDIR="$(cd "$DIAG_OUTDIR" && pwd)"

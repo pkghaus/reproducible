@@ -353,7 +353,7 @@ echo
 echo "verify: reading a record"
 (
     # shellcheck source=scripts/verify.sh
-    . "$ROOT/scripts/verify.sh" x x x x
+    . "$ROOT/scripts/verify.sh"
     # Sourcing a script brings its `set -euo pipefail` into this subshell, and
     # a group that dies on the first non-zero status reports a failure without
     # ever printing which assertion it was. The suite drives its own errexit.
@@ -407,7 +407,7 @@ echo
 echo "verify: the three words"
 (
     # shellcheck source=scripts/verify.sh
-    . "$ROOT/scripts/verify.sh" x x x x
+    . "$ROOT/scripts/verify.sh"
     # Sourcing a script brings its `set -euo pipefail` into this subshell, and
     # a group that dies on the first non-zero status reports a failure without
     # ever printing which assertion it was. The suite drives its own errexit.
@@ -494,7 +494,7 @@ echo
 echo "verify: the verdict object is what the worker reads"
 (
     # shellcheck source=scripts/verify.sh
-    . "$ROOT/scripts/verify.sh" x x x x
+    . "$ROOT/scripts/verify.sh"
     # Sourcing a script brings its `set -euo pipefail` into this subshell, and
     # a group that dies on the first non-zero status reports a failure without
     # ever printing which assertion it was. The suite drives its own errexit.
@@ -536,7 +536,7 @@ echo
 echo "publish: what it refuses to upload"
 (
     # shellcheck source=scripts/publish.sh
-    . "$ROOT/scripts/publish.sh" x
+    . "$ROOT/scripts/publish.sh"
     # Sourcing a script brings its `set -euo pipefail` into this subshell, and
     # a group that dies on the first non-zero status reports a failure without
     # ever printing which assertion it was. The suite drives its own errexit.
@@ -710,7 +710,7 @@ echo "conventions that nothing else asserts"
 echo "a BAD carries the evidence needed to diagnose it"
 (
     # shellcheck source=scripts/verify.sh
-    . "$ROOT/scripts/verify.sh" x x x x
+    . "$ROOT/scripts/verify.sh"
     set +e; shopt -u inherit_errexit
 
     # A real record's shape, clearsigned like every one published since
@@ -1057,10 +1057,8 @@ BIFIX
         *) no "symbols are resolved from the compared builds themselves" "resolves elsewhere" ;;
     esac
 
-    # verify.sh assigns OUTDIR and ROOT from its own arguments before the
-    # guard that makes it sourceable, so a sourcing script that keeps state
-    # under those names has it silently overwritten. It did: output went to
-    # `x/` and the upload failed after a twelve-minute rebuild.
+    # Whatever verify.sh assigns above its source guard lands in the sourcing
+    # script's scope, so a name both use is silently overwritten.
     clash="$(comm -12 \
         <(awk '/^if \[ "\$\{BASH_SOURCE\[0\]\}" != "\$\{0\}" \]/{exit} /^[A-Z_]+=/{sub(/=.*/,""); print}' \
             "$ROOT/scripts/verify.sh" | sort -u) \

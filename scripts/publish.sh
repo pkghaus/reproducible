@@ -38,11 +38,6 @@
 set -euo pipefail
 shopt -s inherit_errexit
 
-VERDICT_DIR="${1:?usage: $0 <verdict-dir> [inventory.json]}"
-INVENTORY="${2:-}"
-
-R2_BUCKET="${R2_BUCKET:-pkghaus-reproducible}"
-
 require_r2() {
     if [ -z "${R2_ACCESS_KEY_ID:-}" ] || [ -z "${R2_SECRET_ACCESS_KEY:-}" ] \
        || [ -z "${R2_ENDPOINT:-}" ]; then
@@ -82,10 +77,16 @@ validate_verdicts() { # dir
     printf '%s\n' "$count"
 }
 
+# Sourced by the tests; arguments are read below, only when executed.
 # shellcheck disable=SC2317
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
     return 0
 fi
+
+VERDICT_DIR="${1:?usage: $0 <verdict-dir> [inventory.json]}"
+INVENTORY="${2:-}"
+
+R2_BUCKET="${R2_BUCKET:-pkghaus-reproducible}"
 
 count="$(validate_verdicts "$VERDICT_DIR")"
 
