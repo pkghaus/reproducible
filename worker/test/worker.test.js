@@ -300,7 +300,7 @@ test("listAll follows the cursor rather than stopping at one page", async () => 
   const bucket = fakeBucket(many);
   const orig = bucket.list.bind(bucket);
   bucket.list = (o) => orig({ ...o, limit: 10 });
-  const { objects } = await listAll(bucket, "verify/");
+  const objects = await listAll(bucket, "verify/");
   assert.equal(objects.length, 25);
 });
 

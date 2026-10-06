@@ -43,17 +43,15 @@ function esc(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 }
 
-export async function listAll(bucket, prefix, delimiter) {
+export async function listAll(bucket, prefix) {
   const objects = [];
-  const prefixes = [];
   let cursor;
   do {
-    const page = await bucket.list({ prefix, delimiter, cursor, limit: 1000 });
+    const page = await bucket.list({ prefix, cursor, limit: 1000 });
     objects.push(...page.objects);
-    if (page.delimitedPrefixes) prefixes.push(...page.delimitedPrefixes);
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);
-  return { objects, prefixes };
+  return objects;
 }
 
 const STYLE = `
@@ -253,9 +251,12 @@ export function baseVersion(v) {
 // the empty marks say how much is not yet known.
 export const HISTORY_SLOTS = 5;
 
+function recentHistory(v) {
+  return Array.isArray(v && v.history) ? v.history.slice(-HISTORY_SLOTS) : [];
+}
+
 export function historyCells(v) {
-  const h = Array.isArray(v && v.history) ? v.history : [];
-  const recent = h.slice(-HISTORY_SLOTS);
+  const recent = recentHistory(v);
   const pad = HISTORY_SLOTS - recent.length;
   const marks = [];
   for (let i = 0; i < pad; i += 1) marks.push('<i class="none"></i>');
@@ -283,8 +284,7 @@ export function historyRate(v) {
 
 // The GOOD/BAD statuses in the stored window, oldest first.
 function decidedWindow(v) {
-  const h = Array.isArray(v && v.history) ? v.history : [];
-  return h.slice(-HISTORY_SLOTS)
+  return recentHistory(v)
     .filter((e) => e && (e.status === "GOOD" || e.status === "BAD"))
     .map((e) => e.status);
 }
@@ -333,7 +333,7 @@ export function summarise(verdicts, inventory) {
         suite, arch, ...counts, decided,
         checked: hits.length,
         published: publishedFor(inventory, suite, arch),
-        pct: decided ? Math.round((counts.GOOD / decided) * 1000) / 10 : null,
+        pct: percentOf(counts.GOOD, decided),
         // Artifacts whose stored window holds both answers. The percentage
         // above is about the latest rebuild of each; this is the count for
         // which "the latest rebuild" is not the whole story.
@@ -354,15 +354,19 @@ export function publishedFor(inventory, suite, arch) {
   return Array.isArray(list) ? list.length : 0;
 }
 
+function percentOf(good, decided) {
+  return decided ? Math.round((good / decided) * 1000) / 10 : null;
+}
+
 export function totals(rows) {
   const sum = (k) => rows.reduce((n, r) => n + r[k], 0);
   const good = sum("GOOD");
-  const decided = good + sum("BAD");
+  const bad = sum("BAD");
   return {
-    GOOD: good, BAD: sum("BAD"), UNKWN: sum("UNKWN"),
+    GOOD: good, BAD: bad, UNKWN: sum("UNKWN"),
     checked: sum("checked"), published: sum("published"),
     mixed: sum("mixed"), comparable: sum("comparable"),
-    pct: decided ? Math.round((good / decided) * 1000) / 10 : null,
+    pct: percentOf(good, good + bad),
   };
 }
 
@@ -389,20 +393,20 @@ function countCells(r) {
     `<td class="num"><span class="v ${r.UNKWN ? "unkwn" : "none"}">${r.UNKWN}</span></td>`;
 }
 
+function statCells(r) {
+  return `<td class="size pct">${r.checked} / ${r.published}</td>` +
+    countCells(r) +
+    `<td class="size pct">${pctCell(r)}</td>` +
+    mixedCell(r);
+}
+
 function summaryTable(rows, tot) {
   const body = rows.map((r) =>
     `<tr><td class="tgt"><code>${esc(r.suite)}</code></td>` +
     `<td class="tgt"><code>${esc(r.arch)}</code></td>` +
-    `<td class="size pct">${r.checked} / ${r.published}</td>` +
-    countCells(r) +
-    `<td class="size pct">${pctCell(r)}</td>` +
-    `${mixedCell(r)}</tr>`).join("\n");
+    `${statCells(r)}</tr>`).join("\n");
   const total = `<tr class="tot"><td class="tgt"><code>all</code></td>` +
-    `<td class="tgt"><code>all</code></td>` +
-    `<td class="size pct">${tot.checked} / ${tot.published}</td>` +
-    countCells(tot) +
-    `<td class="size pct">${pctCell(tot)}</td>` +
-    `${mixedCell(tot)}</tr>`;
+    `<td class="tgt"><code>all</code></td>${statCells(tot)}</tr>`;
   return `<div class="tablewrap"><table>
 <thead><tr><th>suite</th><th>arch</th><th class="size">checked</th>
 <th class="num">good</th><th class="num">bad</th><th class="num">unkwn</th>
@@ -602,22 +606,15 @@ export function renderPackage(name, verdicts) {
       v: verdicts.find((x) => x.suite === suite && x.arch === arch),
     })));
   const body = sorted.map(({ suite, arch, v }) => {
-    if (!v) {
-      return `<tr><td class="tgt"><code>${esc(suite)}</code></td>` +
-        `<td class="tgt"><code>${esc(arch)}</code></td>` +
-        `<td>${verdictCell(null, "not yet checked")}</td>` +
-        `<td><div class="hist">${historyCells(null)}` +
-        `<span class="rate">0/0</span></div></td>` +
-        `<td colspan="2" class="ver">not yet checked</td></tr>`;
-    }
-    const detail = detailCell(v);
-    return `<tr><td class="tgt"><code>${esc(suite)}</code></td>` +
+    // With no verdict the strip is all empty marks and the rate reads 0/0.
+    const lead = `<tr><td class="tgt"><code>${esc(suite)}</code></td>` +
       `<td class="tgt"><code>${esc(arch)}</code></td>` +
-      `<td>${verdictCell(v.status, v.debrebuild || v.status)}</td>` +
+      `<td>${verdictCell(v && v.status, v ? v.debrebuild || v.status : "not yet checked")}</td>` +
       `<td><div class="hist">${historyCells(v)}` +
-      `<span class="rate">${historyRate(v)}</span></div></td>` +
-      `<td class="ver">${esc(v.version)}</td>` +
-      `<td class="ver">${detail}</td></tr>`;
+      `<span class="rate">${historyRate(v)}</span></div></td>`;
+    if (!v) return `${lead}<td colspan="2" class="ver">not yet checked</td></tr>`;
+    return `${lead}<td class="ver">${esc(v.version)}</td>` +
+      `<td class="ver">${detailCell(v)}</td></tr>`;
   }).join("\n");
   const inner = `<div class="tablewrap"><table>
 <thead><tr><th>suite</th><th>arch</th><th>verdict</th><th>last five</th>
@@ -655,12 +652,12 @@ async function htmlSecurityHeaders() {
   return htmlHeaders;
 }
 
-async function html(bodyText, maxAge) {
+async function html(bodyText) {
   return new Response(bodyText, {
     status: 200,
     headers: {
       "content-type": "text/html; charset=utf-8",
-      "cache-control": `public, max-age=${maxAge}`,
+      "cache-control": `public, max-age=${PAGE_MAX_AGE}`,
       ...(await htmlSecurityHeaders()),
     },
   });
@@ -788,9 +785,8 @@ export async function loadVerdicts(bucket) {
 }
 
 export async function scanVerdicts(bucket) {
-  const { objects } = await listAll(bucket, PREFIX);
   const out = [];
-  for (const o of objects) {
+  for (const o of await listAll(bucket, PREFIX)) {
     if (!o.key.endsWith(".json")) continue;
     const body = await bucket.get(o.key);
     if (!body) continue;
@@ -921,7 +917,7 @@ async function serve(request, env, ctx, path) {
   if (path === "/" || path === "") {
     const [verdicts, inventory] = await Promise.all([
       loadVerdicts(env.VERDICTS), loadInventory(env.VERDICTS)]);
-    return send(await html(renderRoot(verdicts, inventory), PAGE_MAX_AGE));
+    return send(await html(renderRoot(verdicts, inventory)));
   }
 
   // /<package>/ - one package across every target.
@@ -935,7 +931,7 @@ async function serve(request, env, ctx, path) {
     // package it lists, and a link that 404s would say the package does not
     // exist when what is missing is the verdict.
     if (!verdicts.length && !inventoryHas(inventory, name)) return notFound();
-    return send(await html(renderPackage(name, verdicts), PAGE_MAX_AGE));
+    return send(await html(renderPackage(name, verdicts)));
   }
 
   return notFound();
