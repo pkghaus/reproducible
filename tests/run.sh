@@ -567,13 +567,12 @@ echo "deploy-time route assertion"
     # here. The comparison is a pure function precisely so this needs no
     # network, no token and no zone.
     rt() { # script declared-json routes-json
-        python3 - "$1" "$2" "$3" <<'PYEOF'
-import json, sys, importlib.util, pathlib
-spec = importlib.util.spec_from_file_location(
-    "cr", pathlib.Path(__file__).parent if False else "scripts/check-routes.py")
+        PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/scripts/check-routes.py" "$1" "$2" "$3" <<'PYEOF'
+import json, sys, importlib.util
+spec = importlib.util.spec_from_file_location("cr", sys.argv[1])
 cr = importlib.util.module_from_spec(spec); spec.loader.exec_module(cr)
-out = cr.problems(sys.argv[1], "wrangler.toml",
-                  set(json.loads(sys.argv[2])), json.loads(sys.argv[3]))
+out = cr.problems(sys.argv[2], "wrangler.toml",
+                  set(json.loads(sys.argv[3])), json.loads(sys.argv[4]))
 print("\n".join(out) if out else "OK")
 PYEOF
     }
