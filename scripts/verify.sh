@@ -56,14 +56,18 @@ checksum_files() { # file
     ' "$1"
 }
 
-# The recorded sha256 of one file, from the same block.
-checksum_of() { # file name
-    awk -v want="$2" '
+# One field of the line naming a file in the same block: 1 is its sha256,
+# 2 its size. The first line naming it wins.
+record_field() { # file name column
+    awk -v want="$2" -v col="$3" '
         /^Checksums-Sha256:/ { inblock = 1; next }
-        inblock && /^ / { if ($3 == want) { print $1; exit }; next }
+        inblock && /^ / { if ($3 == want) { print $col; exit }; next }
         inblock { exit }
     ' "$1"
 }
+
+# The recorded sha256 of one file.
+checksum_of() { record_field "$1" "$2" 1; } # file name
 
 # And its recorded size. Field 2 of the same line, verified against a real
 # record rather than the spec: zola_0.23.6-3_arm64.buildinfo carries
@@ -71,13 +75,7 @@ checksum_of() { # file name
 # already fetched -- which matters, since the recorded .deb itself is not
 # downloaded and fetching one only to size it would be a real cost on a host
 # whose downloads are counted.
-size_of() { # file name
-    awk -v want="$2" '
-        /^Checksums-Sha256:/ { inblock = 1; next }
-        inblock && /^ / { if ($3 == want) { print $2; exit }; next }
-        inblock { exit }
-    ' "$1"
-}
+size_of() { record_field "$1" "$2" 2; } # file name
 
 # The four wordings debrebuild's comparison loop dies with. Kept in one place
 # because classify() and summarise_log() must agree: a verdict of BAD whose
