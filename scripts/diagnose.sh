@@ -144,28 +144,26 @@ done
 # All-identical is a real result and gets reported as one; it is also the
 # thing to watch, because this configuration is not the shipped one and a
 # configuration that never flaps cannot be used to find the flap.
+# The compared build keeps its own number in the file and report names.
 a="$(cat "$work/b1/binpath")"
-b=""
+other=2
 for i in $(seq 2 "$DIAG_BUILDS"); do
-    cand="$(cat "$work/b$i/binpath")"
-    if ! cmp -s "$a" "$cand"; then
-        b="$cand"
+    if ! cmp -s "$a" "$(cat "$work/b$i/binpath")"; then
+        other="$i"
         echo "  builds 1 and $i differ" >&2
         break
     fi
     echo "  builds 1 and $i are identical" >&2
 done
-if [ -z "$b" ]; then
-    b="$(cat "$work/b2/binpath")"
-fi
+b="$(cat "$work/b$other/binpath")"
 cp "$a" "$DIAG_OUTDIR/build1.unstripped"
-cp "$b" "$DIAG_OUTDIR/build2.unstripped"
+cp "$b" "$DIAG_OUTDIR/build$other.unstripped"
 readelf -sW "$a" > "$DIAG_OUTDIR/symbols.txt"
 
-python3 - "$a" "$b" "$DIAG_OUTDIR/report.txt" <<'PY'
+python3 - "$a" "$b" "$DIAG_OUTDIR/report.txt" "$other" <<'PY'
 import bisect, re, subprocess, sys
 
-a, b, out = sys.argv[1], sys.argv[2], sys.argv[3]
+a, b, out, b_num = sys.argv[1:5]
 lines = []
 def say(s):
     lines.append(s)
@@ -194,7 +192,7 @@ def funcs(elf):
 
 da, db = open(a, 'rb').read(), open(b, 'rb').read()
 say(f"build 1: {len(da)} bytes")
-say(f"build 2: {len(db)} bytes")
+say(f"build {b_num}: {len(db)} bytes")
 
 if da == db:
     say("")

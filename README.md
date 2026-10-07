@@ -142,7 +142,8 @@ tests/run.sh
 cd worker && npm ci && npm test
 ```
 
-Neither needs a network, a credential, or docker.
+Neither needs a network, a credential, or docker. The diagnostic's test
+assembles two small ELFs, so it needs binutils and `dpkg-deb`.
 
 ## Licence
 
