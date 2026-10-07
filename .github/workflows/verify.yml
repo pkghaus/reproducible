@@ -163,8 +163,8 @@ jobs:
           VERIFY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEG_SUITE: ${{ matrix.leg.suite }}
           LEG_ARCH: ${{ matrix.leg.arch }}
-        # exec: a timeout signals the step's own process, and a killed shell would
-        # leave verify.sh writing verdicts while the upload reads them.
+        # exec: a timeout's SIGTERM goes to the step's own process, and a killed
+        # shell would leave verify.sh writing verdicts while the upload reads them.
         run: exec scripts/verify.sh plan.json "$LEG_SUITE" "$LEG_ARCH" verdicts
 
       # always(), because a leg that fails or is cancelled has still done real

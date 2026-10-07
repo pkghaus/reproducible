@@ -163,7 +163,7 @@ readelf -sW "$a" > "$DIAG_OUTDIR/symbols.txt"
 python3 - "$a" "$b" "$DIAG_OUTDIR/report.txt" "$other" <<'PY'
 import bisect, re, subprocess, sys
 
-a, b, out, other = sys.argv[1:5]
+a, b, out, b_num = sys.argv[1:5]
 lines = []
 def say(s):
     lines.append(s)
@@ -192,7 +192,7 @@ def funcs(elf):
 
 da, db = open(a, 'rb').read(), open(b, 'rb').read()
 say(f"build 1: {len(da)} bytes")
-say(f"build {other}: {len(db)} bytes")
+say(f"build {b_num}: {len(db)} bytes")
 
 if da == db:
     say("")
