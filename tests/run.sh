@@ -53,7 +53,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=173
+EXPECTED_ASSERTIONS=175
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -801,6 +801,28 @@ echo "only a BAD keeps its rebuilt artifact"
         *"if-no-files-found: error"*) ok "the verdicts upload still errors on empty" ;;
         *) no "the verdicts upload still errors on empty" "block was [$vb]" ;;
     esac
+    exit $((fail > 0))
+) || groups_failed=$((groups_failed + 1))
+
+echo "a leg that runs out of time still uploads what it finished"
+(
+    # A job timeout cancels and runs always() steps only inside the cancel
+    # grace; a step timeout fails that step and the uploads run as usual.
+    got="$(python3 - "$ROOT/.github/workflows/verify.yml" <<'PYT'
+import sys, yaml
+job = yaml.safe_load(open(sys.argv[1]))["jobs"]["verify"]
+steps = {s.get("name"): s for s in job["steps"]}
+print(job["timeout-minutes"] - steps["Rebuild and compare"].get("timeout-minutes", 10**6))
+print(steps["Upload this leg's verdicts"].get("if"), steps["Keep the evidence behind any BAD"].get("if"))
+PYT
+)"
+    margin="$(printf '%s\n' "$got" | sed -n 1p)"
+    if [ -n "$margin" ] && [ "$margin" -ge 5 ]; then
+        ok "the rebuild step times out at least 5 minutes before the job"
+    else
+        no "the rebuild step times out at least 5 minutes before the job" "margin [${margin}]"
+    fi
+    eq "and both uploads run under always()" "always() always()" "$(printf '%s\n' "$got" | sed -n 2p)"
     exit $((fail > 0))
 ) || groups_failed=$((groups_failed + 1))
 

@@ -134,14 +134,11 @@ jobs:
     # `a && b || c` yields c whenever b is falsy, so the obvious spelling with
     # the default first would give every leg the same runner.
     runs-on: ${{ matrix.leg.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
-    # A leg starts at most MAX_PER_LEG rebuilds, serially, and verify.sh records
-    # any rebuild past VERIFY_TIMEOUT (an hour) as UNKWN. This bound cancels the
-    # leg outright, 10 minutes short of GitHub's 360. MAX_PER_LEG x an hour can
-    # exceed it (the archive dispatches 12, with at most one rebuild per leg for
-    # each package it names), and an overrun costs work, not correctness:
-    # verdicts already written still upload and publish under always(), and an
-    # artifact the leg never reached keeps the verdict it had until a later run
-    # plans it again.
+    # A backstop 10 minutes short of GitHub's 360. The step timeout on "Rebuild
+    # and compare" bounds a leg, which MAX_PER_LEG rebuilds of up to an hour
+    # each can reach. A timed-out step fails without cancelling the job, so
+    # finished verdicts upload through the ordinary after-failure path, and an
+    # unreached artifact keeps its old verdict until a later run plans it.
     timeout-minutes: 350
     steps:
       - name: Checkout
@@ -159,6 +156,9 @@ jobs:
       # matrix from the archive's own Packages indices by way of plan.json, so
       # they are upstream data rather than anything this repo wrote.
       - name: Rebuild and compare
+        # 10 minutes under the job's 350; the steps around it have taken under
+        # a minute together.
+        timeout-minutes: 340
         env:
           VERIFY_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           LEG_SUITE: ${{ matrix.leg.suite }}
