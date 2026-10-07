@@ -53,7 +53,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=175
+EXPECTED_ASSERTIONS=176
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -814,6 +814,7 @@ job = yaml.safe_load(open(sys.argv[1]))["jobs"]["verify"]
 steps = {s.get("name"): s for s in job["steps"]}
 print(job["timeout-minutes"] - steps["Rebuild and compare"].get("timeout-minutes", 10**6))
 print(steps["Upload this leg's verdicts"].get("if"), steps["Keep the evidence behind any BAD"].get("if"))
+print(steps["Rebuild and compare"]["run"].split()[0])
 PYT
 )"
     margin="$(printf '%s\n' "$got" | sed -n 1p)"
@@ -823,6 +824,8 @@ PYT
         no "the rebuild step times out at least 5 minutes before the job" "margin [${margin}]"
     fi
     eq "and both uploads run under always()" "always() always()" "$(printf '%s\n' "$got" | sed -n 2p)"
+    eq "and verify.sh is the step's process, so the timeout's signal reaches it" \
+       "exec" "$(printf '%s\n' "$got" | sed -n 3p)"
     exit $((fail > 0))
 ) || groups_failed=$((groups_failed + 1))
 
