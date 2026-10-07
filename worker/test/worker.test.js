@@ -663,7 +663,7 @@ test("the root page explains what each word means and what it does not prove", (
 });
 
 // A BAD that a later rebuild did not reproduce is a different finding from one
-// that repeats, and the page has to say which. scripts/sticky-bad.py is what
+// that repeats, and the page has to say which. scripts/carry-prior.py is what
 // keeps the BAD standing; this is the half a reader sees.
 //
 // Scoped to the TABLE, not the whole page: the legend explains the same word,
@@ -698,7 +698,7 @@ test("a flapped BAD is rendered as non-deterministic, and an ordinary one is not
 });
 
 test("a flapped GOOD does not claim non-determinism", () => {
-  // sticky-bad.py never sets flapped on a GOOD. If it somehow did, the row
+  // carry-prior.py never sets flapped on a GOOD. If it somehow did, the row
   // must not read as a failure.
   const html = tableOf(renderPackage("croc", [{
     package: "croc", suite: "trixie", arch: "amd64", status: "GOOD",

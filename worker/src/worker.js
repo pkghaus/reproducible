@@ -292,7 +292,7 @@ function decidedWindow(v) {
 // True when the stored window holds more than one decided answer.
 //
 // Deliberately NOT called "flapped". A verdict carries its own `flapped`
-// field, set by sticky-bad.py when a BAD is later followed by a GOOD, and it
+// field, set by carry-prior.py when a BAD is later followed by a GOOD, and it
 // is permanent - that is what puts "non-deterministic" on a package row. This
 // one is a property of the last five rebuilds and goes false again once the
 // odd one out scrolls off the end. Both are worth showing; sharing a word
@@ -578,10 +578,11 @@ function detailCell(v) {
   const short = (h) => esc(String(h || "").slice(0, 16));
   // A BAD that a later rebuild did NOT reproduce says more than one that
   // repeats: the build is non-deterministic, so neither run is the package's
-  // behaviour and both the failure and the pass are real. scripts/sticky-bad.py
-  // is what keeps the BAD standing through that later pass; without it the
-  // verdict would flip to GOOD and the finding would exist only in a CI log.
-  // Gated on BAD, not on the flag alone. sticky-bad.py only ever sets flapped
+  // behaviour and both the failure and the pass are real.
+  // scripts/carry-prior.py is what keeps the BAD standing through that later
+  // pass; without it the verdict would flip to GOOD and the finding would
+  // exist only in a CI log.
+  // Gated on BAD, not on the flag alone. carry-prior.py only ever sets flapped
   // on a BAD, but a GOOD row must not be able to read as a failure however the
   // object got that way -- the renderer is the last place that can refuse.
   const flap = (v.status === "BAD" && v.flapped)
