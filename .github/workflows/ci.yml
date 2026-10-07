@@ -87,15 +87,10 @@ jobs:
 
   twins:
     # verify/rebuild.sh and verify/Dockerfile are byte-identical copies of
-    # pkghaus/apt's, which is what lets the archive keep a hand-run drill while
-    # this repo runs the same procedure unattended. This job is the ONLY thing
-    # that says so: nothing marks the files themselves, because a header saying
-    # "this has a twin" is itself a change to the files and therefore drift
-    # until both repos merge it. That was measured on this repo's first push,
-    # where such a header turned this job red. Nothing else enforces it,
-    # and a rebuild harness that has quietly diverged from the one a maintainer
-    # tests with is the kind of difference that only shows up in a disagreement
-    # about a verdict.
+    # pkghaus/apt's, and this job is the only thing enforcing it. A harness
+    # that drifted from the one a maintainer tests with would surface only as
+    # a disputed verdict. README.md says why nothing inside the files marks
+    # them.
     #
     # Fetched from the public repo rather than checked out: this needs one file
     # pair, not a second clone, and no credential. A red run here means the two

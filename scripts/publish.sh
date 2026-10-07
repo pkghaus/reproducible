@@ -4,44 +4,21 @@
 #
 #   scripts/publish.sh <verdict-dir> [inventory.json]
 #
-# <verdict-dir> holds verify/<suite>/<arch>/<package>.json as verify.sh left
-# it; every file under it is uploaded under the same relative path.
+# <verdict-dir> holds <suite>/<arch>/<package>.json as verify.sh left it. Each
+# file replaces the object at the same path under verify/, once
+# scripts/carry-prior.py has carried the prior verdict's history and any
+# sticky BAD onto it.
 #
-# The bucket is pkghaus-reproducible, NOT the archive's pkghaus-apt. A verifier
-# that can write to what it verifies is making a weaker claim than one that
-# cannot, and the split is the only thing enforcing that: the credentials here
-# have no reach into the archive at all.
+# The bucket is pkghaus-reproducible, never the archive's; worker/wrangler.toml
+# says why. verdicts.json, the index every page renders from
+# (scripts/roll-index.py), is rebuilt from the WHOLE bucket, not this run's
+# verdicts: a run verifies a handful per leg and the page shows all of them.
 #
-# A verdict object is overwritten in place, once per (package, suite, arch),
-# with ONE exception: a BAD is not cleared by a later non-BAD verdict on the
-# same version. Reproducibility is a claim over every rebuild of an immutable
-# artifact, so one failure falsifies it and a later success proves
-# non-determinism rather than repairing it. scripts/sticky-bad.py holds the
-# rule. Otherwise a verdict is the current answer and the previous one is in
-# the run that produced it.
-#
-# It also writes verdicts.json, the rolled-up index every page is rendered
-# from. The Worker used to read one R2 object per artifact: 75 of them took
-# 5.6 to 8.1 seconds on a cache miss, measured 2026-09-21, and 216 would have
-# been three times that. Binding reads are also capped per invocation on the
-# free plan, and a render was already making about eighty. One object fixes
-# both, and the per-artifact files stay exactly where they are because they
-# are the documented machine-readable endpoint.
-#
-# The index is built from the WHOLE bucket, not from this run's verdicts: a
-# run verifies a handful per leg and the page has to show all of them.
-#
-# No cache purge afterwards. The Worker serves pages and verdicts with
-# max-age=300, so an edge holds a stale page for at most five minutes, and a
-# verification wave takes longer than that to finish anyway.
+# No cache purge afterwards: pages and verdicts are served with max-age=300,
+# and a verification wave takes longer than that anyway.
 
 set -euo pipefail
 shopt -s inherit_errexit
-
-VERDICT_DIR="${1:?usage: $0 <verdict-dir> [inventory.json]}"
-INVENTORY="${2:-}"
-
-R2_BUCKET="${R2_BUCKET:-pkghaus-reproducible}"
 
 require_r2() {
     if [ -z "${R2_ACCESS_KEY_ID:-}" ] || [ -z "${R2_SECRET_ACCESS_KEY:-}" ] \
@@ -82,27 +59,26 @@ validate_verdicts() { # dir
     printf '%s\n' "$count"
 }
 
+# Sourced by the tests; arguments are read below, only when executed.
 # shellcheck disable=SC2317
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
     return 0
 fi
 
+VERDICT_DIR="${1:?usage: $0 <verdict-dir> [inventory.json]}"
+INVENTORY="${2:-}"
+
+R2_BUCKET="${R2_BUCKET:-pkghaus-reproducible}"
+
 count="$(validate_verdicts "$VERDICT_DIR")"
 
-# Prior state, fetched BEFORE the upload, so a BAD this run would have
-# replaced is still readable. sticky-bad.py rewrites this run's verdicts in
-# place where a BAD must survive; see its docstring for the rule and why an
-# overwrite would publish non-determinism as good news.
+# Prior state, fetched BEFORE the upload, so the verdicts this run replaces
+# are still readable. carry-prior.py rewrites this run's verdicts in place:
+# history carried forward, and a BAD kept where a later rebuild cannot clear it.
 prior_dir="$(mktemp -d)"
 trap 'rm -rf "$prior_dir"' EXIT
 aws_ s3 sync "s3://$R2_BUCKET/verify/" "$prior_dir/" --only-show-errors
-
-# Order matters. history.py writes the merged array onto THIS run's verdicts,
-# then sticky-bad.py may replace one of them with the prior object and copies
-# that array across. Reversed, a sticky BAD would publish the prior verdict's
-# history and lose the observation this run just made.
-python3 "$(dirname "${BASH_SOURCE[0]}")/history.py" "$VERDICT_DIR" "$prior_dir"
-python3 "$(dirname "${BASH_SOURCE[0]}")/sticky-bad.py" "$VERDICT_DIR" "$prior_dir"
+python3 "$(dirname "${BASH_SOURCE[0]}")/carry-prior.py" "$VERDICT_DIR" "$prior_dir"
 
 printf 'uploading %s verdict(s) to s3://%s/verify/\n' "$count" "$R2_BUCKET" >&2
 aws_ s3 sync "$VERDICT_DIR/" "s3://$R2_BUCKET/verify/" \

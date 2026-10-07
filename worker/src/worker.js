@@ -1,18 +1,13 @@
 // reproducible.pkg.haus - the archive's reproducibility verdicts.
 //
-// Reads one JSON verdict per published artifact from R2 and renders them. It
-// never writes: the verdicts are produced by scripts/verify.sh in CI and
-// uploaded from there, and this Worker's binding is to a DIFFERENT bucket from
-// the archive's on purpose. Not because this Worker would abuse a shared one
-// -- buildinfos reads the archive's bucket and is fine -- but because R2 API
-// tokens scope to whole buckets, so the CI credential that writes verdicts
-// would equally be able to write pool/ and dists/. See wrangler.toml.
+// Renders the verdicts CI writes to R2, and never writes. Its bucket is not
+// the archive's; wrangler.toml says why.
 //
 // The page furniture below is a COPY of buildinfos.pkg.haus's, which is a copy
 // of apt.pkg.haus's, not an approximation. Three hosts, one surface, and a
-// reader moves between them. the estate style registry records it; when a
-// surface and that page disagree, one of them is wrong and it gets fixed in the
-// same change.
+// reader moves between them. The estate style registry records it; when a
+// surface and the registry disagree, one of them is wrong and it gets fixed in
+// the same change.
 
 const PREFIX = "verify/";
 
@@ -43,17 +38,15 @@ function esc(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
 }
 
-export async function listAll(bucket, prefix, delimiter) {
+export async function listAll(bucket, prefix) {
   const objects = [];
-  const prefixes = [];
   let cursor;
   do {
-    const page = await bucket.list({ prefix, delimiter, cursor, limit: 1000 });
+    const page = await bucket.list({ prefix, cursor, limit: 1000 });
     objects.push(...page.objects);
-    if (page.delimitedPrefixes) prefixes.push(...page.delimitedPrefixes);
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);
-  return { objects, prefixes };
+  return objects;
 }
 
 const STYLE = `
@@ -69,7 +62,7 @@ const STYLE = `
 --accent-text:#CC3B18;--code-bg:#F7F6F3;
 /* The news chips' green and amber, reused: GOOD is the archive's "added",
    UNKWN its "updated". BAD takes --accent-text, which the chips give security.
-   Registered as consumers in web-style.md's optional-token table. */
+   The estate style registry lists this host as a consumer of both. */
 --ok:#4A7C3A;--chg:#8A6012;
 --mono:ui-monospace,Menlo,Consolas,monospace}
 @media(prefers-color-scheme:dark){:root{
@@ -253,9 +246,12 @@ export function baseVersion(v) {
 // the empty marks say how much is not yet known.
 export const HISTORY_SLOTS = 5;
 
+function recentHistory(v) {
+  return Array.isArray(v && v.history) ? v.history.slice(-HISTORY_SLOTS) : [];
+}
+
 export function historyCells(v) {
-  const h = Array.isArray(v && v.history) ? v.history : [];
-  const recent = h.slice(-HISTORY_SLOTS);
+  const recent = recentHistory(v);
   const pad = HISTORY_SLOTS - recent.length;
   const marks = [];
   for (let i = 0; i < pad; i += 1) marks.push('<i class="none"></i>');
@@ -283,8 +279,7 @@ export function historyRate(v) {
 
 // The GOOD/BAD statuses in the stored window, oldest first.
 function decidedWindow(v) {
-  const h = Array.isArray(v && v.history) ? v.history : [];
-  return h.slice(-HISTORY_SLOTS)
+  return recentHistory(v)
     .filter((e) => e && (e.status === "GOOD" || e.status === "BAD"))
     .map((e) => e.status);
 }
@@ -292,7 +287,7 @@ function decidedWindow(v) {
 // True when the stored window holds more than one decided answer.
 //
 // Deliberately NOT called "flapped". A verdict carries its own `flapped`
-// field, set by sticky-bad.py when a BAD is later followed by a GOOD, and it
+// field, set by carry-prior.py when a BAD is later followed by a GOOD, and it
 // is permanent - that is what puts "non-deterministic" on a package row. This
 // one is a property of the last five rebuilds and goes false again once the
 // odd one out scrolls off the end. Both are worth showing; sharing a word
@@ -333,7 +328,7 @@ export function summarise(verdicts, inventory) {
         suite, arch, ...counts, decided,
         checked: hits.length,
         published: publishedFor(inventory, suite, arch),
-        pct: decided ? Math.round((counts.GOOD / decided) * 1000) / 10 : null,
+        pct: percentOf(counts.GOOD, decided),
         // Artifacts whose stored window holds both answers. The percentage
         // above is about the latest rebuild of each; this is the count for
         // which "the latest rebuild" is not the whole story.
@@ -354,15 +349,19 @@ export function publishedFor(inventory, suite, arch) {
   return Array.isArray(list) ? list.length : 0;
 }
 
+function percentOf(good, decided) {
+  return decided ? Math.round((good / decided) * 1000) / 10 : null;
+}
+
 export function totals(rows) {
   const sum = (k) => rows.reduce((n, r) => n + r[k], 0);
   const good = sum("GOOD");
-  const decided = good + sum("BAD");
+  const bad = sum("BAD");
   return {
-    GOOD: good, BAD: sum("BAD"), UNKWN: sum("UNKWN"),
+    GOOD: good, BAD: bad, UNKWN: sum("UNKWN"),
     checked: sum("checked"), published: sum("published"),
     mixed: sum("mixed"), comparable: sum("comparable"),
-    pct: decided ? Math.round((good / decided) * 1000) / 10 : null,
+    pct: percentOf(good, good + bad),
   };
 }
 
@@ -389,20 +388,20 @@ function countCells(r) {
     `<td class="num"><span class="v ${r.UNKWN ? "unkwn" : "none"}">${r.UNKWN}</span></td>`;
 }
 
+function statCells(r) {
+  return `<td class="size pct">${r.checked} / ${r.published}</td>` +
+    countCells(r) +
+    `<td class="size pct">${pctCell(r)}</td>` +
+    mixedCell(r);
+}
+
 function summaryTable(rows, tot) {
   const body = rows.map((r) =>
     `<tr><td class="tgt"><code>${esc(r.suite)}</code></td>` +
     `<td class="tgt"><code>${esc(r.arch)}</code></td>` +
-    `<td class="size pct">${r.checked} / ${r.published}</td>` +
-    countCells(r) +
-    `<td class="size pct">${pctCell(r)}</td>` +
-    `${mixedCell(r)}</tr>`).join("\n");
+    `${statCells(r)}</tr>`).join("\n");
   const total = `<tr class="tot"><td class="tgt"><code>all</code></td>` +
-    `<td class="tgt"><code>all</code></td>` +
-    `<td class="size pct">${tot.checked} / ${tot.published}</td>` +
-    countCells(tot) +
-    `<td class="size pct">${pctCell(tot)}</td>` +
-    `${mixedCell(tot)}</tr>`;
+    `<td class="tgt"><code>all</code></td>${statCells(tot)}</tr>`;
   return `<div class="tablewrap"><table>
 <thead><tr><th>suite</th><th>arch</th><th class="size">checked</th>
 <th class="num">good</th><th class="num">bad</th><th class="num">unkwn</th>
@@ -574,10 +573,11 @@ function detailCell(v) {
   const short = (h) => esc(String(h || "").slice(0, 16));
   // A BAD that a later rebuild did NOT reproduce says more than one that
   // repeats: the build is non-deterministic, so neither run is the package's
-  // behaviour and both the failure and the pass are real. scripts/sticky-bad.py
-  // is what keeps the BAD standing through that later pass; without it the
-  // verdict would flip to GOOD and the finding would exist only in a CI log.
-  // Gated on BAD, not on the flag alone. sticky-bad.py only ever sets flapped
+  // behaviour and both the failure and the pass are real.
+  // scripts/carry-prior.py is what keeps the BAD standing through that later
+  // pass; without it the verdict would flip to GOOD and the finding would
+  // exist only in a CI log.
+  // Gated on BAD, not on the flag alone. carry-prior.py only ever sets flapped
   // on a BAD, but a GOOD row must not be able to read as a failure however the
   // object got that way -- the renderer is the last place that can refuse.
   const flap = (v.status === "BAD" && v.flapped)
@@ -602,22 +602,15 @@ export function renderPackage(name, verdicts) {
       v: verdicts.find((x) => x.suite === suite && x.arch === arch),
     })));
   const body = sorted.map(({ suite, arch, v }) => {
-    if (!v) {
-      return `<tr><td class="tgt"><code>${esc(suite)}</code></td>` +
-        `<td class="tgt"><code>${esc(arch)}</code></td>` +
-        `<td>${verdictCell(null, "not yet checked")}</td>` +
-        `<td><div class="hist">${historyCells(null)}` +
-        `<span class="rate">0/0</span></div></td>` +
-        `<td colspan="2" class="ver">not yet checked</td></tr>`;
-    }
-    const detail = detailCell(v);
-    return `<tr><td class="tgt"><code>${esc(suite)}</code></td>` +
+    // With no verdict the strip is all empty marks and the rate reads 0/0.
+    const lead = `<tr><td class="tgt"><code>${esc(suite)}</code></td>` +
       `<td class="tgt"><code>${esc(arch)}</code></td>` +
-      `<td>${verdictCell(v.status, v.debrebuild || v.status)}</td>` +
+      `<td>${verdictCell(v && v.status, v ? v.debrebuild || v.status : "not yet checked")}</td>` +
       `<td><div class="hist">${historyCells(v)}` +
-      `<span class="rate">${historyRate(v)}</span></div></td>` +
-      `<td class="ver">${esc(v.version)}</td>` +
-      `<td class="ver">${detail}</td></tr>`;
+      `<span class="rate">${historyRate(v)}</span></div></td>`;
+    if (!v) return `${lead}<td colspan="2" class="ver">not yet checked</td></tr>`;
+    return `${lead}<td class="ver">${esc(v.version)}</td>` +
+      `<td class="ver">${detailCell(v)}</td></tr>`;
   }).join("\n");
   const inner = `<div class="tablewrap"><table>
 <thead><tr><th>suite</th><th>arch</th><th>verdict</th><th>last five</th>
@@ -655,12 +648,12 @@ async function htmlSecurityHeaders() {
   return htmlHeaders;
 }
 
-async function html(bodyText, maxAge) {
+async function html(bodyText) {
   return new Response(bodyText, {
     status: 200,
     headers: {
       "content-type": "text/html; charset=utf-8",
-      "cache-control": `public, max-age=${maxAge}`,
+      "cache-control": `public, max-age=${PAGE_MAX_AGE}`,
       ...(await htmlSecurityHeaders()),
     },
   });
@@ -757,17 +750,8 @@ export default {
   },
 };
 
-// Every verdict, from the rolled-up index the verifier writes.
-//
-// This used to read one R2 object per artifact and the comment here said the
-// fleet was "small enough to read whole". It was not: 75 verdicts took 5.6 to
-// 8.1 seconds on a cache miss, measured 2026-09-21, and 216 would have been
-// three times that. Binding reads are capped per invocation on the free plan
-// too, and a render was already making about eighty of them.
-//
-// scripts/roll-index.py builds verdicts.json from the whole bucket at every
-// publish. The per-artifact objects are untouched: they are the documented
-// machine-readable endpoint and this is a derived view of them.
+// Every verdict, from the index scripts/roll-index.py rebuilds at each publish
+// (its docstring says why one object rather than one read per artifact).
 export async function loadVerdicts(bucket) {
   const index = await bucket.get(INDEX_KEY);
   if (index) {
@@ -788,9 +772,8 @@ export async function loadVerdicts(bucket) {
 }
 
 export async function scanVerdicts(bucket) {
-  const { objects } = await listAll(bucket, PREFIX);
   const out = [];
-  for (const o of objects) {
+  for (const o of await listAll(bucket, PREFIX)) {
     if (!o.key.endsWith(".json")) continue;
     const body = await bucket.get(o.key);
     if (!body) continue;
@@ -921,7 +904,7 @@ async function serve(request, env, ctx, path) {
   if (path === "/" || path === "") {
     const [verdicts, inventory] = await Promise.all([
       loadVerdicts(env.VERDICTS), loadInventory(env.VERDICTS)]);
-    return send(await html(renderRoot(verdicts, inventory), PAGE_MAX_AGE));
+    return send(await html(renderRoot(verdicts, inventory)));
   }
 
   // /<package>/ - one package across every target.
@@ -935,7 +918,7 @@ async function serve(request, env, ctx, path) {
     // package it lists, and a link that 404s would say the package does not
     // exist when what is missing is the verdict.
     if (!verdicts.length && !inventoryHas(inventory, name)) return notFound();
-    return send(await html(renderPackage(name, verdicts), PAGE_MAX_AGE));
+    return send(await html(renderPackage(name, verdicts)));
   }
 
   return notFound();

@@ -38,28 +38,7 @@
 set -euo pipefail
 shopt -s inherit_errexit
 
-PLAN="${1:?usage: $0 <plan.json> <suite> <build-arch> <outdir>}"
-SUITE="${2:?usage: $0 <plan.json> <suite> <build-arch> <outdir>}"
-BUILD_ARCH="${3:?usage: $0 <plan.json> <suite> <build-arch> <outdir>}"
-OUTDIR="${4:?usage: $0 <plan.json> <suite> <build-arch> <outdir>}"
-
-# Where a BAD's rebuilt .deb is kept. The RECORDED half is public and
-# permanent -- anyone can fetch it from the archive -- so the half worth
-# saving is the one that otherwise evaporates with the work directory. With
-# it and the published original, diffoscope can be run later at full strength
-# on a machine of the right architecture, which is what zola's arm64 failure
-# needed and could not have.
-EVIDENCE="${EVIDENCE:-evidence}"
-
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 UA="${PKGHAUS_UA:-curl pkghaus-ci}"
-# An hour per artifact. A Rust rebuild of the larger packages runs to tens of
-# minutes, and snapshot.debian.org stalls rather than refusing, so the bound
-# has to exist: without it one stalled fetch eats the leg's whole budget and
-# every artifact behind it goes unverified with nothing recorded. The timeout
-# kills this script's child, not the container it started -- the runner is
-# destroyed with the job, so nothing outlives it there.
-VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-3600}"
 
 fetch() { # url dest
     curl -fsSL --max-time 600 --retry 3 --retry-all-errors --retry-delay 5 \
@@ -178,11 +157,34 @@ with open(out, "w", encoding="utf-8") as handle:
 PY
 }
 
-# Sourced by the tests; everything below runs only when executed.
+# Sourced by the tests and diagnose.sh. Everything below, arguments included,
+# runs only when executed, so a sourcing script keeps its own OUTDIR and ROOT.
 # shellcheck disable=SC2317
 if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
     return 0
 fi
+
+PLAN="${1:?usage: $0 <plan.json> <suite> <build-arch> <outdir>}"
+SUITE="${2:?usage: $0 <plan.json> <suite> <build-arch> <outdir>}"
+BUILD_ARCH="${3:?usage: $0 <plan.json> <suite> <build-arch> <outdir>}"
+OUTDIR="${4:?usage: $0 <plan.json> <suite> <build-arch> <outdir>}"
+
+# Where a BAD's rebuilt .deb is kept. The RECORDED half is public and
+# permanent -- anyone can fetch it from the archive -- so the half worth
+# saving is the one that otherwise evaporates with the work directory. With
+# it and the published original, diffoscope can be run later at full strength
+# on a machine of the right architecture, which is what zola's arm64 failure
+# needed and could not have.
+EVIDENCE="${EVIDENCE:-evidence}"
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# An hour per artifact. A Rust rebuild of the larger packages runs to tens of
+# minutes, and snapshot.debian.org stalls rather than refusing, so the bound
+# has to exist: without it one stalled fetch eats the leg's whole budget and
+# every artifact behind it goes unverified with nothing recorded. The timeout
+# kills this script's child, not the container it started -- the runner is
+# destroyed with the job, so nothing outlives it there.
+VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-3600}"
 
 mkdir -p "$OUTDIR"
 

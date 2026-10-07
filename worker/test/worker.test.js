@@ -300,7 +300,7 @@ test("listAll follows the cursor rather than stopping at one page", async () => 
   const bucket = fakeBucket(many);
   const orig = bucket.list.bind(bucket);
   bucket.list = (o) => orig({ ...o, limit: 10 });
-  const { objects } = await listAll(bucket, "verify/");
+  const objects = await listAll(bucket, "verify/");
   assert.equal(objects.length, 25);
 });
 
@@ -311,9 +311,7 @@ test("a verdict that will not parse is dropped, not rendered half-read", async (
 });
 
 test("a page is rendered from one read, not one per artifact", async () => {
-  // 75 per-artifact reads took 5.6-8.1s on a cache miss and the fleet is 216.
-  // Binding reads are capped per invocation too. This is the assertion that
-  // keeps the render cheap: the count must not grow with the fleet.
+  // The read count must not grow with the fleet; scripts/roll-index.py says why.
   resetCache();
   await get("/");
   await settle();
@@ -663,7 +661,7 @@ test("the root page explains what each word means and what it does not prove", (
 });
 
 // A BAD that a later rebuild did not reproduce is a different finding from one
-// that repeats, and the page has to say which. scripts/sticky-bad.py is what
+// that repeats, and the page has to say which. scripts/carry-prior.py is what
 // keeps the BAD standing; this is the half a reader sees.
 //
 // Scoped to the TABLE, not the whole page: the legend explains the same word,
@@ -698,7 +696,7 @@ test("a flapped BAD is rendered as non-deterministic, and an ordinary one is not
 });
 
 test("a flapped GOOD does not claim non-determinism", () => {
-  // sticky-bad.py never sets flapped on a GOOD. If it somehow did, the row
+  // carry-prior.py never sets flapped on a GOOD. If it somehow did, the row
   // must not read as a failure.
   const html = tableOf(renderPackage("croc", [{
     package: "croc", suite: "trixie", arch: "amd64", status: "GOOD",
@@ -897,7 +895,7 @@ test("the summary's mixed count and a row's non-deterministic are separate", () 
 // 2026-09-22 across this host, the landing and buildinfos; stats already had
 // it. This host and buildinfos were the 5.5rem pair; the landing was a milder
 // 4rem. Asserted on the rendered page rather than the source string, because
-// what ships is what a reader sees. the estate style registry carries the why.
+// what ships is what a reader sees. The estate style registry carries the why.
 test("a section boundary is 3.5rem with its rule centred", () => {
   const html = renderRoot([], { targets: {} });
   assert.match(html, /\.about\{[^}]*margin-top:1\.75rem[^}]*padding-top:1\.75rem/);

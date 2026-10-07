@@ -15,6 +15,16 @@
 # it needs a privileged container and half an hour -- so its classifier is
 # driven against logs captured from real debrebuild runs instead.
 
+# A group that sources a script inherits its `set -euo pipefail`, so it turns
+# errexit off again straight after: a group that dies on the first non-zero
+# status reports a failure without saying which assertion it was.
+#
+# Two lint traps, both fatal because CI's lint has no severity filter. A '$'
+# inside a single-quoted pattern reads as a missed expansion (SC2016), so
+# patterns match around the sigils or use double quotes with \$. And a comment
+# whose first word is the linter's own name is parsed as a directive
+# (SC1072/SC1073).
+#
 # Two habits of this file that shellcheck reads as mistakes, both deliberate.
 # Each group runs in a subshell so its environment and its overrides cannot
 # leak into the next, hence the subshell-local assignment warnings. And the
@@ -43,7 +53,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=164
+EXPECTED_ASSERTIONS=165
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -93,9 +103,6 @@ echo "inventory: the index parser reads what the archive actually emits"
 (
     # shellcheck source=scripts/inventory.sh
     . "$ROOT/scripts/inventory.sh"
-    # Sourcing a script brings its `set -euo pipefail` into this subshell, and
-    # a group that dies on the first non-zero status reports a failure without
-    # ever printing which assertion it was. The suite drives its own errexit.
     set +e; shopt -u inherit_errexit
 
     stanzas() { cat <<'EOF'
@@ -353,10 +360,7 @@ echo
 echo "verify: reading a record"
 (
     # shellcheck source=scripts/verify.sh
-    . "$ROOT/scripts/verify.sh" x x x x
-    # Sourcing a script brings its `set -euo pipefail` into this subshell, and
-    # a group that dies on the first non-zero status reports a failure without
-    # ever printing which assertion it was. The suite drives its own errexit.
+    . "$ROOT/scripts/verify.sh"
     set +e; shopt -u inherit_errexit
 
     # Clearsigned, because every .buildinfo published since 2026-09-12 is, and
@@ -407,10 +411,7 @@ echo
 echo "verify: the three words"
 (
     # shellcheck source=scripts/verify.sh
-    . "$ROOT/scripts/verify.sh" x x x x
-    # Sourcing a script brings its `set -euo pipefail` into this subshell, and
-    # a group that dies on the first non-zero status reports a failure without
-    # ever printing which assertion it was. The suite drives its own errexit.
+    . "$ROOT/scripts/verify.sh"
     set +e; shopt -u inherit_errexit
 
     log() { printf '%s\n' "$@" > "$WORK/log"; printf '%s\n' "$WORK/log"; }
@@ -494,10 +495,7 @@ echo
 echo "verify: the verdict object is what the worker reads"
 (
     # shellcheck source=scripts/verify.sh
-    . "$ROOT/scripts/verify.sh" x x x x
-    # Sourcing a script brings its `set -euo pipefail` into this subshell, and
-    # a group that dies on the first non-zero status reports a failure without
-    # ever printing which assertion it was. The suite drives its own errexit.
+    . "$ROOT/scripts/verify.sh"
     set +e; shopt -u inherit_errexit
 
     out="$WORK/v.json"
@@ -536,10 +534,7 @@ echo
 echo "publish: what it refuses to upload"
 (
     # shellcheck source=scripts/publish.sh
-    . "$ROOT/scripts/publish.sh" x
-    # Sourcing a script brings its `set -euo pipefail` into this subshell, and
-    # a group that dies on the first non-zero status reports a failure without
-    # ever printing which assertion it was. The suite drives its own errexit.
+    . "$ROOT/scripts/publish.sh"
     set +e; shopt -u inherit_errexit
 
     mkdir -p "$WORK/pub/unstable/amd64"
@@ -567,13 +562,12 @@ echo "deploy-time route assertion"
     # here. The comparison is a pure function precisely so this needs no
     # network, no token and no zone.
     rt() { # script declared-json routes-json
-        python3 - "$1" "$2" "$3" <<'PYEOF'
-import json, sys, importlib.util, pathlib
-spec = importlib.util.spec_from_file_location(
-    "cr", pathlib.Path(__file__).parent if False else "scripts/check-routes.py")
+        PYTHONDONTWRITEBYTECODE=1 python3 - "$ROOT/scripts/check-routes.py" "$1" "$2" "$3" <<'PYEOF'
+import json, sys, importlib.util
+spec = importlib.util.spec_from_file_location("cr", sys.argv[1])
 cr = importlib.util.module_from_spec(spec); spec.loader.exec_module(cr)
-out = cr.problems(sys.argv[1], "wrangler.toml",
-                  set(json.loads(sys.argv[2])), json.loads(sys.argv[3]))
+out = cr.problems(sys.argv[2], "wrangler.toml",
+                  set(json.loads(sys.argv[3])), json.loads(sys.argv[4]))
 print("\n".join(out) if out else "OK")
 PYEOF
     }
@@ -624,7 +618,6 @@ PYEOF
 echo
 echo "the rolled-up index"
 (
-    set +e; shopt -u inherit_errexit
     W="$WORK/roll"; rm -rf "$W"; mkdir -p "$W/trixie/amd64" "$W/unstable/arm64"
     printf '{"package":"croc","status":"GOOD","suite":"trixie","arch":"amd64"}' > "$W/trixie/amd64/croc.json"
     printf '{"package":"zola","status":"BAD","suite":"unstable","arch":"arm64"}'  > "$W/unstable/arm64/zola.json"
@@ -698,10 +691,7 @@ echo "conventions that nothing else asserts"
     # and comparing nothing.
     eq "the rebuild harness is present" "2" \
        "$(find "$ROOT/verify" -maxdepth 1 -type f \( -name rebuild.sh -o -name Dockerfile \) | wc -l)"
-    # Nothing inside those two files may mark them as twins. A header saying so
-    # is itself a change to them, which is drift until pkghaus/apt merges the
-    # same header -- measured on this repo's first push, where exactly that
-    # turned the twins job red. The note belongs in both READMEs.
+    # Nothing inside those two files may mark them as twins; README.md says why.
     eq "and nothing inside them claims to be a twin" "0" \
        "$(grep -lc 'TWIN' "$ROOT/verify/rebuild.sh" "$ROOT/verify/Dockerfile" 2>/dev/null | wc -l)"
     has "while the README does say so" "byte-identical" "$(cat "$ROOT/README.md")"
@@ -711,7 +701,7 @@ echo "conventions that nothing else asserts"
 echo "a BAD carries the evidence needed to diagnose it"
 (
     # shellcheck source=scripts/verify.sh
-    . "$ROOT/scripts/verify.sh" x x x x
+    . "$ROOT/scripts/verify.sh"
     set +e; shopt -u inherit_errexit
 
     # A real record's shape, clearsigned like every one published since
@@ -775,13 +765,10 @@ PYN
 
 echo "only a BAD keeps its rebuilt artifact"
 (
-    set +e; shopt -u inherit_errexit
     vs="$(cat "$ROOT/scripts/verify.sh")"
 
     # The copy must be gated on the verdict. Keeping a GOOD would upload a
     # byte-identical copy of a file the archive already serves, on every run.
-    # No '$' in the pattern: shellcheck reads it as a missed expansion
-    # (SC2016) and this repo's lint has no severity filter.
     cp_at="$(printf '%s\n' "$vs" | grep -n 'cp .*built.*EVIDENCE' | head -1 | cut -d: -f1)"
     gate_at="$(printf '%s\n' "$vs" | grep -n 'verdict" = BAD' \
                | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1)"
@@ -819,10 +806,8 @@ echo "only a BAD keeps its rebuilt artifact"
 
 echo "a BAD is not cleared by a later non-BAD verdict"
 (
-    set +e; shopt -u inherit_errexit
-
-    sb="$ROOT/scripts/sticky-bad.py"
-    eq "sticky-bad.py exists" "yes" "$([ -f "$sb" ] && echo yes || echo no)"
+    carry="$ROOT/scripts/carry-prior.py"
+    eq "carry-prior.py exists" "yes" "$([ -f "$carry" ] && echo yes || echo no)"
 
     # new-status prior-status same-version -> writes the pair and runs the merge.
     # Returns the resulting status, and sets STICKY_JSON to the whole object.
@@ -848,7 +833,7 @@ if sys.argv[4] == "flapped":
     obj["flapped"] = True
 json.dump(obj, open(sys.argv[1], "w"), indent=2, sort_keys=True)
 PYOLD
-        python3 "$sb" "$nd" "$pd" >/dev/null 2>&1
+        python3 "$carry" "$nd" "$pd" >/dev/null 2>&1
         STICKY_JSON="$(cat "$nd/testing/arm64/zola.json")"
         printf '%s' "$STICKY_JSON" | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])'
         rm -rf "$nd" "$pd"
@@ -886,6 +871,14 @@ PYOLD
         *'"last_rebuild_status": "GOOD"'*) ok "and records what the later rebuild said" ;;
         *) no "and records what the later rebuild said" "json was [$STICKY_JSON]" ;;
     esac
+    case "$STICKY_JSON" in
+        *'"last_rebuild_run": "https://example.invalid/new"'*) ok "  and the run that said it" ;;
+        *) no "  and the run that said it" "json was [$STICKY_JSON]" ;;
+    esac
+    # A run URL outlives the Actions log it points at, so history keeps none.
+    run_sticky GOOD GOOD 1.0-1 1.0-1 >/dev/null
+    eq "a history entry is a status and a time, nothing more" "at status" \
+       "$(printf '%s' "$STICKY_JSON" | python3 -c 'import json,sys; print(" ".join(sorted(json.load(sys.stdin)["history"][-1])))')"
 
     # An UNKWN is not a matching rebuild, so it must NOT claim the build
     # flapped -- that would turn a snapshot.debian.org outage into a
@@ -907,29 +900,25 @@ PYOLD
     # BAD is already gone and the merge reads what it just overwrote.
     pub="$(cat "$ROOT/scripts/publish.sh")"
     # Comments excluded, same idiom as apt's -force-replace check. The header
-    # comment names scripts/sticky-bad.py thirty lines above the call, so a
-    # bare head -1 measured the comment and the ordering assertion passed
-    # whatever the code did -- caught by mutating the call's position and
-    # seeing nothing fail.
-    sticky_at="$(printf '%s\n' "$pub" | grep -n 'sticky-bad.py' \
-                 | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1)"
-    # No '$' in the pattern: shellcheck reads it as a missed expansion (SC2016)
-    # and the repo's lint has no severity filter. 'sync .*VERDICT_DIR' matches
-    # the upload line only -- the prior-state sync names no VERDICT_DIR and the
-    # sticky-bad.py call has no 'sync'.
+    # comment names the script thirty lines above the call, so a bare head -1
+    # measured the comment and the ordering assertion passed whatever the code
+    # did -- caught by mutating the call's position and seeing nothing fail.
+    carry_at="$(printf '%s\n' "$pub" | grep -n 'carry-prior.py' \
+                | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1)"
+    # 'sync .*VERDICT_DIR' matches the upload line only: the prior-state sync
+    # names no VERDICT_DIR and the carry-prior.py call has no 'sync'.
     upload_at="$(printf '%s\n' "$pub" | grep -n 'sync .*VERDICT_DIR' | head -1 | cut -d: -f1)"
-    if [ -n "$sticky_at" ] && [ -n "$upload_at" ] && [ "$sticky_at" -lt "$upload_at" ]; then
-        ok "publish.sh runs sticky-bad.py before uploading"
+    if [ -n "$carry_at" ] && [ -n "$upload_at" ] && [ "$carry_at" -lt "$upload_at" ]; then
+        ok "publish.sh runs carry-prior.py before uploading"
     else
-        no "publish.sh runs sticky-bad.py before uploading" \
-           "sticky at ${sticky_at:-none}, upload at ${upload_at:-none}"
+        no "publish.sh runs carry-prior.py before uploading" \
+           "carry at ${carry_at:-none}, upload at ${upload_at:-none}"
     fi
     exit $((fail > 0))
 ) || groups_failed=$((groups_failed + 1))
 
 echo "the diagnostic names a symbol without changing what it measures"
 (
-    set +e; shopt -u inherit_errexit
     dg="$ROOT/scripts/diagnose.sh"
     eq "diagnose.sh exists and is executable" "yes" \
        "$([ -x "$dg" ] && echo yes || echo no)"
@@ -998,25 +987,11 @@ BIFIX
     rm -f "$edit" "$rec" "$bad"
 
     body="$(cat "$dg")"
-    # The answer is only as good as the claim that both builds laid out .text
-    # the same way, so the script has to check that rather than assume it.
-    # Two builds, diffed against each other. A single build mapped against the
-    # published one is a cross-build offset translation, and it was wrong:
-    # keeping symbols moved .text by 19,456 bytes on zola/arm64, so the
-    # offset pointed at different code.
-    # No '$' inside a single-quoted grep pattern anywhere in this file. It is
-    # read as a missed expansion (SC2016), this repo's lint has no severity
-    # filter, and the job fails. Match around the sigils instead.
-    #
-    # And do not begin such a note with the linter's own name: a comment whose
-    # first word after '#' is that name is parsed as a directive, which is
-    # SC1072/SC1073 and also fails.
+    # Several builds diffed against each other, never one against the published
+    # build; diagnose.sh says why.
     eq "it builds more than once" "1" \
        "$(printf '%s\n' "$body" | grep -c '^for i in .*seq 1 .*DIAG_BUILDS')"
-    # Three by default, not two. Each extra build buys odds more cheaply than
-    # another whole run: two builds miss an even-odds flap half the time,
-    # three miss it a quarter of the time, for one extra build instead of a
-    # second twenty-five-minute run.
+    # Three by default; the comment on DIAG_BUILDS says why.
     eq "the default build count is at least three" "yes" \
        "$(printf '%s\n' "$body" | grep -qE 'DIAG_BUILDS=.*:-[3-9]' && echo yes || echo no)"
     # One build cannot be compared with anything, so it has to be refused
@@ -1036,8 +1011,8 @@ BIFIX
             ok "and says why one build against the published one is wrong" ;;
         *) no "and says why one build against the published one is wrong" "rationale absent" ;;
     esac
-    # An identical pair is a RESULT, not a failure: this package flaps about
-    # half the time, so half of all runs legitimately catch nothing.
+    # An all-identical run is a RESULT, not a failure: this package flaps about
+    # half the time, so a quarter of three-build runs legitimately catch nothing.
     case "$body" in
         *IDENTICAL*) ok "an identical pair is reported rather than failed" ;;
         *) no "an identical pair is reported rather than failed" "no identical branch" ;;
@@ -1050,18 +1025,14 @@ BIFIX
     esac
     # The offset-to-symbol step must resolve against one of the two builds it
     # compared, never a third binary.
-    # Double quotes with \$ rather than single quotes: a '$' inside single
-    # quotes is SC2016, and this repo's lint has no severity filter.
     case "$body" in
         *"python3 - \"\$a\" \"\$b\""*)
             ok "symbols are resolved from the compared builds themselves" ;;
         *) no "symbols are resolved from the compared builds themselves" "resolves elsewhere" ;;
     esac
 
-    # verify.sh assigns OUTDIR and ROOT from its own arguments before the
-    # guard that makes it sourceable, so a sourcing script that keeps state
-    # under those names has it silently overwritten. It did: output went to
-    # `x/` and the upload failed after a twelve-minute rebuild.
+    # Whatever verify.sh assigns above its source guard lands in the sourcing
+    # script's scope, so a name both use is silently overwritten.
     clash="$(comm -12 \
         <(awk '/^if \[ "\$\{BASH_SOURCE\[0\]\}" != "\$\{0\}" \]/{exit} /^[A-Z_]+=/{sub(/=.*/,""); print}' \
             "$ROOT/scripts/verify.sh" | sort -u) \
@@ -1080,7 +1051,6 @@ BIFIX
 
 echo "the diagnostic workflow builds natively and keeps what it produces"
 (
-    set +e; shopt -u inherit_errexit
     wf="$ROOT/.github/workflows/diagnose.yml"
     eq "diagnose.yml exists" "yes" "$([ -f "$wf" ] && echo yes || echo no)"
     body="$(cat "$wf")"
@@ -1106,10 +1076,6 @@ echo "the diagnostic workflow builds natively and keeps what it produces"
 
 echo "the last few verdicts are carried forward"
 (
-    set +e; shopt -u inherit_errexit
-    hp="$ROOT/scripts/history.py"
-    eq "history.py exists" "yes" "$([ -f "$hp" ] && echo yes || echo no)"
-
     # new-status new-version prior-json -> the resulting history array
     run_hist() { # new_status new_version prior_history_json prior_version
         local nd pd
@@ -1131,7 +1097,7 @@ json.dump({"package": "zola", "suite": "testing", "arch": "arm64",
           open(sys.argv[1], "w"), indent=2, sort_keys=True)
 PYP
         fi
-        python3 "$hp" "$nd" "$pd" >/dev/null 2>&1
+        python3 "$ROOT/scripts/carry-prior.py" "$nd" "$pd" >/dev/null 2>&1
         python3 -c "
 import json,sys
 d=json.load(open('$nd/testing/arm64/zola.json'))
@@ -1146,7 +1112,7 @@ print(','.join(e['status'] for e in d.get('history',[])))"
        "GOOD" "$(run_hist GOOD 1.0-1 "" "")"
 
     # A new version is a different file. Carrying the old one's failures across
-    # would make a fix unprovable, which is the same scoping sticky-bad.py uses.
+    # would make a fix unprovable, which is the same scoping the sticky BAD uses.
     eq "a version change resets the history" \
        "GOOD" "$(run_hist GOOD 1.0-2 "$H3" 1.0-1)"
 
@@ -1155,6 +1121,9 @@ print(','.join(e['status'] for e in d.get('history',[])))"
     H6='[{"status":"GOOD","at":"a"},{"status":"GOOD","at":"b"},{"status":"GOOD","at":"c"},{"status":"GOOD","at":"d"},{"status":"GOOD","at":"e"},{"status":"GOOD","at":"f"}]'
     eq "the window is capped at five" \
        "GOOD,GOOD,GOOD,GOOD,GOOD" "$(run_hist GOOD 1.0-1 "$H6" 1.0-1)"
+    H6B='[{"status":"BAD","at":"a"},{"status":"BAD","at":"b"},{"status":"GOOD","at":"c"},{"status":"GOOD","at":"d"},{"status":"GOOD","at":"e"},{"status":"UNKWN","at":"f"}]'
+    eq "  and the cap drops the oldest, not the newest" \
+       "GOOD,GOOD,GOOD,UNKWN,GOOD" "$(run_hist GOOD 1.0-1 "$H6B" 1.0-1)"
 
     # An UNKWN is recorded. The page decides what to count; dropping it here
     # would hide that a rebuild was attempted at all.
@@ -1163,33 +1132,16 @@ print(','.join(e['status'] for e in d.get('history',[])))"
     exit $((fail > 0))
 ) || groups_failed=$((groups_failed + 1))
 
-echo "history survives a sticky BAD, and runs before it"
+echo "history survives a sticky BAD"
 (
-    set +e; shopt -u inherit_errexit
-
-    # Order is load-bearing. history.py writes the merged array onto THIS run's
-    # verdict; sticky-bad.py may then discard that verdict in favour of the
-    # prior one. Reversed, a sticky BAD would publish a history missing the
-    # rebuild that just happened.
-    pub="$(cat "$ROOT/scripts/publish.sh")"
-    h_at="$(printf '%s\n' "$pub" | grep -n 'history.py' | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1)"
-    s_at="$(printf '%s\n' "$pub" | grep -n 'sticky-bad.py' | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1)"
-    if [ -n "$h_at" ] && [ -n "$s_at" ] && [ "$h_at" -lt "$s_at" ]; then
-        ok "publish.sh runs history.py before sticky-bad.py"
-    else
-        no "publish.sh runs history.py before sticky-bad.py" \
-           "history at ${h_at:-none}, sticky at ${s_at:-none}"
-    fi
-
-    # And the carry itself: a sticky BAD keeps the prior object, so it has to
-    # take the new object's history with it.
+    # A sticky BAD republishes the prior object, so it has to take this run's
+    # history with it, or the strip would lose the rebuild that just happened.
     nd="$(mktemp -d)"; pd="$(mktemp -d)"
     mkdir -p "$nd/testing/arm64" "$pd/testing/arm64"
     python3 - "$nd/testing/arm64/z.json" <<'PYA'
 import json, sys
 json.dump({"package":"z","suite":"testing","arch":"arm64","status":"GOOD",
-           "version":"1.0-1","checked_at":"2026-09-22T09:00:00Z",
-           "history":[{"status":"BAD","at":"a"},{"status":"GOOD","at":"b"}]},
+           "version":"1.0-1","checked_at":"2026-09-22T09:00:00Z"},
           open(sys.argv[1],"w"), indent=2, sort_keys=True)
 PYA
     python3 - "$pd/testing/arm64/z.json" <<'PYB'
@@ -1199,14 +1151,14 @@ json.dump({"package":"z","suite":"testing","arch":"arm64","status":"BAD",
            "history":[{"status":"BAD","at":"a"}]},
           open(sys.argv[1],"w"), indent=2, sort_keys=True)
 PYB
-    python3 "$ROOT/scripts/sticky-bad.py" "$nd" "$pd" >/dev/null 2>&1
+    python3 "$ROOT/scripts/carry-prior.py" "$nd" "$pd" >/dev/null 2>&1
     out="$(cat "$nd/testing/arm64/z.json")"
     case "$out" in
         *'"status": "BAD"'*) ok "the BAD is still what gets published" ;;
         *) no "the BAD is still what gets published" "json was [$out]" ;;
     esac
-    eq "and it carries the newer two-entry history" "2" \
-       "$(printf '%s' "$out" | python3 -c 'import json,sys; print(len(json.load(sys.stdin).get("history",[])))')"
+    eq "and its history ends with this run's rebuild" "BAD@a GOOD@2026-09-22T09:00:00Z" \
+       "$(printf '%s' "$out" | python3 -c 'import json,sys; print(" ".join(e["status"] + "@" + e["at"] for e in json.load(sys.stdin).get("history",[])))')"
     rm -rf "$nd" "$pd"
     exit $((fail > 0))
 ) || groups_failed=$((groups_failed + 1))

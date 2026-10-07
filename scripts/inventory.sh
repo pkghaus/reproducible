@@ -27,7 +27,7 @@ SUITES="${SUITES:-trixie testing unstable}"
 ARCHES="${ARCHES:-amd64 arm64}"
 UA="${PKGHAUS_UA:-curl pkghaus-ci}"
 
-# Overridden in the tests, which have no network.
+# The end-to-end test reaches this through a file:// ARCHIVE_URL.
 fetch_index() { # suite arch
     curl -fsSL --max-time 120 -A "$UA" \
         "$ARCHIVE_URL/dists/$1/main/binary-$2/Packages"

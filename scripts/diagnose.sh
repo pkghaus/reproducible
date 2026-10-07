@@ -2,37 +2,23 @@
 #
 # Name the functions a non-deterministic build disagrees with itself about.
 #
-#   scripts/diagnose.sh <buildinfo-url> <outdir>
+#   scripts/diagnose.sh <buildinfo-url> <outdir> [builds]
 #
-# Builds the same record TWICE with symbols kept, diffs the two binaries
-# against each other, and resolves every differing byte in .text to the symbol
-# that contains it.
+# Builds the same record several times (three by default) with symbols kept,
+# diffs the binaries against each other, and resolves every differing byte in
+# .text to the symbol that contains it.
 #
-# Why twice, and not against the published build. The first version built once
-# and mapped an offset taken from a published-versus-rebuilt diff. That is a
-# cross-build offset translation, valid only if both binaries laid .text out
-# identically. They did not: measured 2026-09-21 on zola/arm64, the diagnostic
-# build's .text came out 19,456 bytes longer than the published one, so the
-# offset pointed at different code and the symbol it produced was withdrawn.
-# Keeping symbols can perturb what LTO internalises and what the linker
-# collects, so ANY build that retains them risks disturbing what it measures.
+# Never one build against the published one. That is a
+# cross-build offset translation, valid only if both laid .text out
+# identically, and keeping symbols made zola/arm64's .text 19,456 bytes longer
+# (2026-09-21), so the offset pointed at different code. Builds in one
+# configuration share a layout by construction.
 #
-# Two builds in one configuration removes the translation. Both halves share a
-# layout by construction, both carry symbols, and a differing byte maps to a
-# symbol in the same build family. Nothing has to be assumed about the
-# published binary at all.
-#
-# What this establishes, and what it does not. It names the function that
-# flapped in THIS configuration, which is a proxy for the shipped one, since
-# keeping symbols is itself a change. The proxy is closed by verification
-# rather than by argument: apply the fix, then require the published page to
-# report GOOD on every leg. On a leg known to flap that means about five
-# consecutive GOODs, because two in a row on a half-failing leg happen a
-# quarter of the time by luck.
-#
-# A pair can come back identical. zola/arm64 fails roughly half the time, so
-# that is the expected outcome about half of all runs. It is reported as a
-# result, not an error. Run it again.
+# The function it names flapped in THIS configuration, a proxy for the shipped
+# one, since keeping symbols is itself a change. A fix is confirmed only when
+# the published page reports GOOD on every leg, about five in a row on a leg
+# known to flap. Every build coming back identical is a result, not an error:
+# run it again.
 #
 # Never publish a package built this way. DEB_BUILD_OPTIONS is recorded in
 # .buildinfo, so a nostrip build is self-identifying and wrong to ship.
@@ -54,15 +40,9 @@ esac
 
 DIAG_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# DIAG_ prefixes, and they are not decoration. verify.sh assigns OUTDIR and
-# ROOT from its own arguments at the top of the file, before the guard that
-# makes it sourceable, so the placeholders below OVERWRITE anything this
-# script has already put there. An earlier version kept its output directory
-# in OUTDIR; every run wrote to `x/` while the workflow looked in `out/` and
-# failed the upload after a twelve-minute rebuild.
-#
+# DIAG_ keeps these names clear of anything verify.sh assigns when sourced.
 # shellcheck source=scripts/verify.sh
-. "$DIAG_ROOT/scripts/verify.sh" x x x x
+. "$DIAG_ROOT/scripts/verify.sh"
 
 mkdir -p "$DIAG_OUTDIR"
 DIAG_OUTDIR="$(cd "$DIAG_OUTDIR" && pwd)"
