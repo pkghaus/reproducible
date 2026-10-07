@@ -119,23 +119,18 @@ for key in sorted(items):
     item = items[key]
     item["targets"].sort()
     if item["_stale"]:
-        item["reason"] = item["_stale"][0]
+        item["_tier"], item["reason"] = 0, item["_stale"][0]
     elif item["_unknown"]:
-        item["reason"] = "last verdict was UNKWN"
+        item["_tier"], item["reason"] = 1, "last verdict was UNKWN"
     else:
-        item["reason"] = "re-verify"
+        item["_tier"], item["reason"] = 2, "re-verify"
     work.append(item)
 
 # Tier first, then oldest. Python's sort is stable and the input is already
 # name-ordered, so ties break the same way on every run -- which is what makes
 # a round-robin sweep actually reach every artifact instead of revisiting
 # whichever one the dict happened to yield first.
-def tier(item):
-    if item["_stale"]:
-        return 0
-    return 1 if item["_unknown"] else 2
-
-work.sort(key=lambda i: (tier(i), i["_age"]))
+work.sort(key=lambda i: (i["_tier"], i["_age"]))
 
 picked, per_leg = [], {}
 for item in work:
