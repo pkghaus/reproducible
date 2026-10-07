@@ -53,7 +53,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=165
+EXPECTED_ASSERTIONS=173
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -1046,6 +1046,55 @@ BIFIX
             ok "a rebuild that came back stripped is fatal" ;;
         *) no "a rebuild that came back stripped is fatal" "no guard found" ;;
     esac
+
+    # End to end against a stub rebuild, in a copy of the root because
+    # verify/rebuild.sh is a twin. FLAP_AT names the build that differs.
+    fake="$(mktemp -d)"
+    mkdir -p "$fake/scripts" "$fake/verify" "$fake/pool"
+    cp "$dg" "$ROOT/scripts/verify.sh" "$fake/scripts/"
+    for v in 1 2; do
+        printf '.text\n.globl flapper\n.type flapper, %%function\nflapper:\n.byte 1,2,3,%s,5,6,7,8\n.size flapper, 8\n' "$v" \
+            | as -o "$fake/verify/flapper$v" -
+    done
+    cat > "$fake/verify/rebuild.sh" <<'STUB'
+#!/usr/bin/env bash
+set -e
+case "${1##*/}" in "b${FLAP_AT:-0}") v=2 ;; *) v=1 ;; esac
+mkdir -p "$1/pkg/DEBIAN" "$1/pkg/usr/bin" "$1/rebuilt"
+cp "$(dirname "$0")/flapper$v" "$1/pkg/usr/bin/flapper"
+printf 'Package: flapper\nVersion: 1\nArchitecture: all\nMaintainer: t <t@t>\nDescription: t\n' \
+    > "$1/pkg/DEBIAN/control"
+dpkg-deb --root-owner-group -b "$1/pkg" "$1/rebuilt/flapper_1_all.deb" >/dev/null
+STUB
+    chmod +x "$fake/verify/rebuild.sh"
+    printf 'Format: 1.0\nChecksums-Sha256:\n 00 1 flapper_1.dsc\nEnvironment:\n DEB_BUILD_OPTIONS="parallel=4"\n' \
+        > "$fake/pool/flapper_1_all.buildinfo"
+    printf 'Format: 3.0 (native)\nChecksums-Sha256:\n 00 1 flapper_1.tar.xz\n' > "$fake/pool/flapper_1.dsc"
+    : > "$fake/pool/flapper_1.tar.xz"
+    rec="file://$fake/pool/flapper_1_all.buildinfo"
+
+    # Builds 1 and 2 match and 3 differs: everything must say 3, or the
+    # artifact names a build that matched build 1.
+    FLAP_AT=3 "$fake/scripts/diagnose.sh" "$rec" "$fake/out3" >/dev/null 2>&1
+    eq "diagnose.sh runs end to end against a stub rebuild" "0" "$?"
+    report="$(cat "$fake/out3/report.txt" 2>/dev/null)"
+    eq "the report names the differing build by its own number" "1" \
+       "$(printf '%s\n' "$report" | grep -c '^build 3: ')"
+    has "and the diff lands in the function that changed" "byte(s)  flapper" "$report"
+    eq "the differing build is kept as build3.unstripped" "yes" \
+       "$([ -f "$fake/out3/build3.unstripped" ] && echo yes || echo no)"
+    eq "and nothing is kept under build 2's name" "no" \
+       "$([ -e "$fake/out3/build2.unstripped" ] && echo yes || echo no)"
+
+    # Nothing differs: build 2 is the one compared, so 2 is the right name.
+    FLAP_AT=0 "$fake/scripts/diagnose.sh" "$rec" "$fake/out0" >/dev/null 2>&1
+    report="$(cat "$fake/out0/report.txt" 2>/dev/null)"
+    has "an all-identical run reports IDENTICAL" "IDENTICAL" "$report"
+    eq "and names build 2, the one it compared" "1" \
+       "$(printf '%s\n' "$report" | grep -c '^build 2: ')"
+    eq "and keeps it as build2.unstripped" "yes" \
+       "$([ -f "$fake/out0/build2.unstripped" ] && echo yes || echo no)"
+    rm -rf "$fake"
     exit $((fail > 0))
 ) || groups_failed=$((groups_failed + 1))
 
