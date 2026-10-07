@@ -1,10 +1,9 @@
 version: 2
 
 updates:
-  # Actions are pinned to commit SHAs and both linters by image digest, which
-  # is what stops a moved tag changing what deploys this worker or what
-  # rebuilds the archive's packages. It is also what stops any of them
-  # updating on their own.
+  # Every action here is first-party actions/* on a major tag, which this
+  # bumps. The shellcheck and actionlint images are pinned by digest in run:
+  # lines, which Dependabot never reads, so those move by hand.
   - package-ecosystem: github-actions
     directory: /
     schedule:

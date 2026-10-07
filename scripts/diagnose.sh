@@ -8,32 +8,17 @@
 # diffs the binaries against each other, and resolves every differing byte in
 # .text to the symbol that contains it.
 #
-# Why several builds, and not one against the published build. The first
-# version built once and mapped an offset taken from a published-versus-rebuilt
-# diff. That is a cross-build offset translation, valid only if both binaries
-# laid .text out identically. They did not: measured 2026-09-21 on zola/arm64,
-# the diagnostic build's .text came out 19,456 bytes longer than the published
-# one, so the offset pointed at different code and the symbol it produced was
-# withdrawn. Keeping symbols can perturb what LTO internalises and what the
-# linker collects, so ANY build that retains them risks disturbing what it
-# measures.
+# Never one build against the published one. That is a
+# cross-build offset translation, valid only if both laid .text out
+# identically, and keeping symbols made zola/arm64's .text 19,456 bytes longer
+# (2026-09-21), so the offset pointed at different code. Builds in one
+# configuration share a layout by construction.
 #
-# Builds in one configuration remove the translation. They share a layout by
-# construction, all carry symbols, and a differing byte maps to a symbol in the
-# same build family. Nothing has to be assumed about the published binary at
-# all.
-#
-# What this establishes, and what it does not. It names the function that
-# flapped in THIS configuration, which is a proxy for the shipped one, since
-# keeping symbols is itself a change. The proxy is closed by verification
-# rather than by argument: apply the fix, then require the published page to
-# report GOOD on every leg. On a leg known to flap that means about five
-# consecutive GOODs, because two in a row on a half-failing leg happen a
-# quarter of the time by luck.
-#
-# Every build can come back identical. zola/arm64 fails roughly half the
-# time, so at three builds that is the expected outcome about a quarter of
-# runs. It is reported as a result, not an error. Run it again.
+# The function it names flapped in THIS configuration, a proxy for the shipped
+# one, since keeping symbols is itself a change. A fix is confirmed only when
+# the published page reports GOOD on every leg, about five in a row on a leg
+# known to flap. Every build coming back identical is a result, not an error:
+# run it again.
 #
 # Never publish a package built this way. DEB_BUILD_OPTIONS is recorded in
 # .buildinfo, so a nostrip build is self-identifying and wrong to ship.

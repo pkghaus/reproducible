@@ -4,36 +4,18 @@
 #
 #   scripts/publish.sh <verdict-dir> [inventory.json]
 #
-# <verdict-dir> holds verify/<suite>/<arch>/<package>.json as verify.sh left
-# it; every file under it is uploaded under the same relative path.
+# <verdict-dir> holds <suite>/<arch>/<package>.json as verify.sh left it. Each
+# file replaces the object at the same path under verify/, once
+# scripts/carry-prior.py has carried the prior verdict's history and any
+# sticky BAD onto it.
 #
-# The bucket is pkghaus-reproducible, NOT the archive's pkghaus-apt. A verifier
-# that can write to what it verifies is making a weaker claim than one that
-# cannot, and the split is the only thing enforcing that: the credentials here
-# have no reach into the archive at all.
+# The bucket is pkghaus-reproducible, never the archive's; worker/wrangler.toml
+# says why. verdicts.json, the index every page renders from
+# (scripts/roll-index.py), is rebuilt from the WHOLE bucket, not this run's
+# verdicts: a run verifies a handful per leg and the page shows all of them.
 #
-# A verdict object is overwritten in place, once per (package, suite, arch),
-# with ONE exception: a BAD is not cleared by a later non-BAD verdict on the
-# same version. Reproducibility is a claim over every rebuild of an immutable
-# artifact, so one failure falsifies it and a later success proves
-# non-determinism rather than repairing it. scripts/carry-prior.py holds the
-# rule. Otherwise a verdict is the current answer and the previous one is in
-# the run that produced it.
-#
-# It also writes verdicts.json, the rolled-up index every page is rendered
-# from. The Worker used to read one R2 object per artifact: 75 of them took
-# 5.6 to 8.1 seconds on a cache miss, measured 2026-09-21, and 216 would have
-# been three times that. Binding reads are also capped per invocation on the
-# free plan, and a render was already making about eighty. One object fixes
-# both, and the per-artifact files stay exactly where they are because they
-# are the documented machine-readable endpoint.
-#
-# The index is built from the WHOLE bucket, not from this run's verdicts: a
-# run verifies a handful per leg and the page has to show all of them.
-#
-# No cache purge afterwards. The Worker serves pages and verdicts with
-# max-age=300, so an edge holds a stale page for at most five minutes, and a
-# verification wave takes longer than that to finish anyway.
+# No cache purge afterwards: pages and verdicts are served with max-age=300,
+# and a verification wave takes longer than that anyway.
 
 set -euo pipefail
 shopt -s inherit_errexit

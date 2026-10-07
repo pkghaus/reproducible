@@ -1,12 +1,7 @@
 // reproducible.pkg.haus - the archive's reproducibility verdicts.
 //
-// Reads one JSON verdict per published artifact from R2 and renders them. It
-// never writes: the verdicts are produced by scripts/verify.sh in CI and
-// uploaded from there, and this Worker's binding is to a DIFFERENT bucket from
-// the archive's on purpose. Not because this Worker would abuse a shared one
-// -- buildinfos reads the archive's bucket and is fine -- but because R2 API
-// tokens scope to whole buckets, so the CI credential that writes verdicts
-// would equally be able to write pool/ and dists/. See wrangler.toml.
+// Renders the verdicts CI writes to R2, and never writes. Its bucket is not
+// the archive's; wrangler.toml says why.
 //
 // The page furniture below is a COPY of buildinfos.pkg.haus's, which is a copy
 // of apt.pkg.haus's, not an approximation. Three hosts, one surface, and a
@@ -755,17 +750,8 @@ export default {
   },
 };
 
-// Every verdict, from the rolled-up index the verifier writes.
-//
-// This used to read one R2 object per artifact and the comment here said the
-// fleet was "small enough to read whole". It was not: 75 verdicts took 5.6 to
-// 8.1 seconds on a cache miss, measured 2026-09-21, and 216 would have been
-// three times that. Binding reads are capped per invocation on the free plan
-// too, and a render was already making about eighty of them.
-//
-// scripts/roll-index.py builds verdicts.json from the whole bucket at every
-// publish. The per-artifact objects are untouched: they are the documented
-// machine-readable endpoint and this is a derived view of them.
+// Every verdict, from the index scripts/roll-index.py rebuilds at each publish
+// (its docstring says why one object rather than one read per artifact).
 export async function loadVerdicts(bucket) {
   const index = await bucket.get(INDEX_KEY);
   if (index) {

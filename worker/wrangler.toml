@@ -11,11 +11,8 @@ compatibility_date = "2026-08-01"
 # apt.pkg.haus and buildinfos.pkg.haus already have. Without it the page's
 # script tag 404s and analytics are silently dark.
 #
-# The other half of that wiring is an entry in plausible-worker's PLAUSIBLE
-# map, which needs a site created in the Plausible dashboard and cannot be
-# written from here. Until it exists the route is live and the Worker logs
-# "PLAUSIBLE has no script for host reproducible.pkg.haus" -- visible, which
-# is the point of adding the route first.
+# The other half is the reproducible.pkg.haus entry in plausible-worker's
+# PLAUSIBLE map.
 #
 # Leave the failure mode at Cloudflare's default, fail CLOSED. There is nothing
 # to fall open TO: every pkg.haus host is AAAA 100::, the discard prefix, so a

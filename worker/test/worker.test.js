@@ -311,9 +311,7 @@ test("a verdict that will not parse is dropped, not rendered half-read", async (
 });
 
 test("a page is rendered from one read, not one per artifact", async () => {
-  // 75 per-artifact reads took 5.6-8.1s on a cache miss and the fleet is 216.
-  // Binding reads are capped per invocation too. This is the assertion that
-  // keeps the render cheap: the count must not grow with the fleet.
+  // The read count must not grow with the fleet; scripts/roll-index.py says why.
   resetCache();
   await get("/");
   await settle();

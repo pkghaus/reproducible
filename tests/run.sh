@@ -15,6 +15,16 @@
 # it needs a privileged container and half an hour -- so its classifier is
 # driven against logs captured from real debrebuild runs instead.
 
+# A group that sources a script inherits its `set -euo pipefail`, so it turns
+# errexit off again straight after: a group that dies on the first non-zero
+# status reports a failure without saying which assertion it was.
+#
+# Two lint traps, both fatal because CI's lint has no severity filter. A '$'
+# inside a single-quoted pattern reads as a missed expansion (SC2016), so
+# patterns match around the sigils or use double quotes with \$. And a comment
+# whose first word is the linter's own name is parsed as a directive
+# (SC1072/SC1073).
+#
 # Two habits of this file that shellcheck reads as mistakes, both deliberate.
 # Each group runs in a subshell so its environment and its overrides cannot
 # leak into the next, hence the subshell-local assignment warnings. And the
@@ -93,9 +103,6 @@ echo "inventory: the index parser reads what the archive actually emits"
 (
     # shellcheck source=scripts/inventory.sh
     . "$ROOT/scripts/inventory.sh"
-    # Sourcing a script brings its `set -euo pipefail` into this subshell, and
-    # a group that dies on the first non-zero status reports a failure without
-    # ever printing which assertion it was. The suite drives its own errexit.
     set +e; shopt -u inherit_errexit
 
     stanzas() { cat <<'EOF'
@@ -354,9 +361,6 @@ echo "verify: reading a record"
 (
     # shellcheck source=scripts/verify.sh
     . "$ROOT/scripts/verify.sh"
-    # Sourcing a script brings its `set -euo pipefail` into this subshell, and
-    # a group that dies on the first non-zero status reports a failure without
-    # ever printing which assertion it was. The suite drives its own errexit.
     set +e; shopt -u inherit_errexit
 
     # Clearsigned, because every .buildinfo published since 2026-09-12 is, and
@@ -408,9 +412,6 @@ echo "verify: the three words"
 (
     # shellcheck source=scripts/verify.sh
     . "$ROOT/scripts/verify.sh"
-    # Sourcing a script brings its `set -euo pipefail` into this subshell, and
-    # a group that dies on the first non-zero status reports a failure without
-    # ever printing which assertion it was. The suite drives its own errexit.
     set +e; shopt -u inherit_errexit
 
     log() { printf '%s\n' "$@" > "$WORK/log"; printf '%s\n' "$WORK/log"; }
@@ -495,9 +496,6 @@ echo "verify: the verdict object is what the worker reads"
 (
     # shellcheck source=scripts/verify.sh
     . "$ROOT/scripts/verify.sh"
-    # Sourcing a script brings its `set -euo pipefail` into this subshell, and
-    # a group that dies on the first non-zero status reports a failure without
-    # ever printing which assertion it was. The suite drives its own errexit.
     set +e; shopt -u inherit_errexit
 
     out="$WORK/v.json"
@@ -537,9 +535,6 @@ echo "publish: what it refuses to upload"
 (
     # shellcheck source=scripts/publish.sh
     . "$ROOT/scripts/publish.sh"
-    # Sourcing a script brings its `set -euo pipefail` into this subshell, and
-    # a group that dies on the first non-zero status reports a failure without
-    # ever printing which assertion it was. The suite drives its own errexit.
     set +e; shopt -u inherit_errexit
 
     mkdir -p "$WORK/pub/unstable/amd64"
@@ -623,7 +618,6 @@ PYEOF
 echo
 echo "the rolled-up index"
 (
-    set +e; shopt -u inherit_errexit
     W="$WORK/roll"; rm -rf "$W"; mkdir -p "$W/trixie/amd64" "$W/unstable/arm64"
     printf '{"package":"croc","status":"GOOD","suite":"trixie","arch":"amd64"}' > "$W/trixie/amd64/croc.json"
     printf '{"package":"zola","status":"BAD","suite":"unstable","arch":"arm64"}'  > "$W/unstable/arm64/zola.json"
@@ -697,10 +691,7 @@ echo "conventions that nothing else asserts"
     # and comparing nothing.
     eq "the rebuild harness is present" "2" \
        "$(find "$ROOT/verify" -maxdepth 1 -type f \( -name rebuild.sh -o -name Dockerfile \) | wc -l)"
-    # Nothing inside those two files may mark them as twins. A header saying so
-    # is itself a change to them, which is drift until pkghaus/apt merges the
-    # same header -- measured on this repo's first push, where exactly that
-    # turned the twins job red. The note belongs in both READMEs.
+    # Nothing inside those two files may mark them as twins; README.md says why.
     eq "and nothing inside them claims to be a twin" "0" \
        "$(grep -lc 'TWIN' "$ROOT/verify/rebuild.sh" "$ROOT/verify/Dockerfile" 2>/dev/null | wc -l)"
     has "while the README does say so" "byte-identical" "$(cat "$ROOT/README.md")"
@@ -774,13 +765,10 @@ PYN
 
 echo "only a BAD keeps its rebuilt artifact"
 (
-    set +e; shopt -u inherit_errexit
     vs="$(cat "$ROOT/scripts/verify.sh")"
 
     # The copy must be gated on the verdict. Keeping a GOOD would upload a
     # byte-identical copy of a file the archive already serves, on every run.
-    # No '$' in the pattern: shellcheck reads it as a missed expansion
-    # (SC2016) and this repo's lint has no severity filter.
     cp_at="$(printf '%s\n' "$vs" | grep -n 'cp .*built.*EVIDENCE' | head -1 | cut -d: -f1)"
     gate_at="$(printf '%s\n' "$vs" | grep -n 'verdict" = BAD' \
                | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1)"
@@ -818,8 +806,6 @@ echo "only a BAD keeps its rebuilt artifact"
 
 echo "a BAD is not cleared by a later non-BAD verdict"
 (
-    set +e; shopt -u inherit_errexit
-
     carry="$ROOT/scripts/carry-prior.py"
     eq "carry-prior.py exists" "yes" "$([ -f "$carry" ] && echo yes || echo no)"
 
@@ -919,10 +905,8 @@ PYOLD
     # did -- caught by mutating the call's position and seeing nothing fail.
     carry_at="$(printf '%s\n' "$pub" | grep -n 'carry-prior.py' \
                 | grep -v '^[0-9]*:[[:space:]]*#' | head -1 | cut -d: -f1)"
-    # No '$' in the pattern: shellcheck reads it as a missed expansion (SC2016)
-    # and the repo's lint has no severity filter. 'sync .*VERDICT_DIR' matches
-    # the upload line only -- the prior-state sync names no VERDICT_DIR and the
-    # carry-prior.py call has no 'sync'.
+    # 'sync .*VERDICT_DIR' matches the upload line only: the prior-state sync
+    # names no VERDICT_DIR and the carry-prior.py call has no 'sync'.
     upload_at="$(printf '%s\n' "$pub" | grep -n 'sync .*VERDICT_DIR' | head -1 | cut -d: -f1)"
     if [ -n "$carry_at" ] && [ -n "$upload_at" ] && [ "$carry_at" -lt "$upload_at" ]; then
         ok "publish.sh runs carry-prior.py before uploading"
@@ -935,7 +919,6 @@ PYOLD
 
 echo "the diagnostic names a symbol without changing what it measures"
 (
-    set +e; shopt -u inherit_errexit
     dg="$ROOT/scripts/diagnose.sh"
     eq "diagnose.sh exists and is executable" "yes" \
        "$([ -x "$dg" ] && echo yes || echo no)"
@@ -1004,25 +987,11 @@ BIFIX
     rm -f "$edit" "$rec" "$bad"
 
     body="$(cat "$dg")"
-    # The answer is only as good as the claim that both builds laid out .text
-    # the same way, so the script has to check that rather than assume it.
-    # Several builds, diffed against each other. A single build mapped against the
-    # published one is a cross-build offset translation, and it was wrong:
-    # keeping symbols moved .text by 19,456 bytes on zola/arm64, so the
-    # offset pointed at different code.
-    # No '$' inside a single-quoted grep pattern anywhere in this file. It is
-    # read as a missed expansion (SC2016), this repo's lint has no severity
-    # filter, and the job fails. Match around the sigils instead.
-    #
-    # And do not begin such a note with the linter's own name: a comment whose
-    # first word after '#' is that name is parsed as a directive, which is
-    # SC1072/SC1073 and also fails.
+    # Several builds diffed against each other, never one against the published
+    # build; diagnose.sh says why.
     eq "it builds more than once" "1" \
        "$(printf '%s\n' "$body" | grep -c '^for i in .*seq 1 .*DIAG_BUILDS')"
-    # Three by default, not two. Each extra build buys odds more cheaply than
-    # another whole run: two builds miss an even-odds flap half the time,
-    # three miss it a quarter of the time, for one extra build instead of a
-    # second twenty-five-minute run.
+    # Three by default; the comment on DIAG_BUILDS says why.
     eq "the default build count is at least three" "yes" \
        "$(printf '%s\n' "$body" | grep -qE 'DIAG_BUILDS=.*:-[3-9]' && echo yes || echo no)"
     # One build cannot be compared with anything, so it has to be refused
@@ -1056,8 +1025,6 @@ BIFIX
     esac
     # The offset-to-symbol step must resolve against one of the two builds it
     # compared, never a third binary.
-    # Double quotes with \$ rather than single quotes: a '$' inside single
-    # quotes is SC2016, and this repo's lint has no severity filter.
     case "$body" in
         *"python3 - \"\$a\" \"\$b\""*)
             ok "symbols are resolved from the compared builds themselves" ;;
@@ -1084,7 +1051,6 @@ BIFIX
 
 echo "the diagnostic workflow builds natively and keeps what it produces"
 (
-    set +e; shopt -u inherit_errexit
     wf="$ROOT/.github/workflows/diagnose.yml"
     eq "diagnose.yml exists" "yes" "$([ -f "$wf" ] && echo yes || echo no)"
     body="$(cat "$wf")"
@@ -1110,7 +1076,6 @@ echo "the diagnostic workflow builds natively and keeps what it produces"
 
 echo "the last few verdicts are carried forward"
 (
-    set +e; shopt -u inherit_errexit
     # new-status new-version prior-json -> the resulting history array
     run_hist() { # new_status new_version prior_history_json prior_version
         local nd pd
@@ -1169,8 +1134,6 @@ print(','.join(e['status'] for e in d.get('history',[])))"
 
 echo "history survives a sticky BAD"
 (
-    set +e; shopt -u inherit_errexit
-
     # A sticky BAD republishes the prior object, so it has to take this run's
     # history with it, or the strip would lose the rebuild that just happened.
     nd="$(mktemp -d)"; pd="$(mktemp -d)"
