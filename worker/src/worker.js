@@ -325,7 +325,7 @@ export function summarise(verdicts, inventory) {
         STATUSES.map((s) => [s, hits.filter((v) => v.status === s).length]));
       const decided = counts.GOOD + counts.BAD;
       rows.push({
-        suite, arch, ...counts, decided,
+        suite, arch, ...counts,
         checked: hits.length,
         published: publishedFor(inventory, suite, arch),
         pct: percentOf(counts.GOOD, decided),
@@ -674,9 +674,8 @@ async function errorPage(status, title, tagline) {
 const notFound = () => errorPage(404, "not found", "No such page.");
 const badRequest = () => errorPage(400, "bad request", "That is not a valid URL.");
 
-// This function and resolveRange below are identical in pkghaus/apt and
-// pkghaus/buildinfos worker/src/worker.js. A bug in any one is a bug in all
-// three: the NaN content-range was. Fix them together.
+// pkghaus/apt and pkghaus/buildinfos carry their own versions of this and
+// resolveRange below, with different shapes; a range bug may need fixing in each.
 //
 // R2 signals an unsatisfiable range by throwing, with no typed error to match
 // on. Matches both the message and the code it actually emits, because either
@@ -806,10 +805,6 @@ export async function loadInventory(bucket) {
   }
 }
 
-export function inventoryHas(inventory, name) {
-  return inventoryPackages(inventory).has(name);
-}
-
 async function serve(request, env, ctx, path) {
   const cache = caches.default;
   // Keyed on the decoded path so the encoded and literal spellings share one
@@ -917,7 +912,7 @@ async function serve(request, env, ctx, path) {
     // Published but unchecked still gets a page. The root table links every
     // package it lists, and a link that 404s would say the package does not
     // exist when what is missing is the verdict.
-    if (!verdicts.length && !inventoryHas(inventory, name)) return notFound();
+    if (!verdicts.length && !inventoryPackages(inventory).has(name)) return notFound();
     return send(await html(renderPackage(name, verdicts)));
   }
 

@@ -38,7 +38,7 @@
 set -euo pipefail
 shopt -s inherit_errexit
 
-UA="${PKGHAUS_UA:-curl pkghaus-ci}"
+UA="curl pkghaus-ci"
 
 fetch() { # url dest
     curl -fsSL --max-time 600 --retry 3 --retry-all-errors --retry-delay 5 \
@@ -173,7 +173,7 @@ OUTDIR="${4:?usage: $0 <plan.json> <suite> <build-arch> <outdir>}"
 # it and the published original, diffoscope can be run later at full strength
 # on a machine of the right architecture, which is what zola's arm64 failure
 # needed and could not have.
-EVIDENCE="${EVIDENCE:-evidence}"
+EVIDENCE=evidence
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # An hour per artifact. A Rust rebuild of the larger packages runs to tens of
@@ -182,7 +182,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # every artifact behind it goes unverified with nothing recorded. The timeout
 # kills this script's child, not the container it started -- the runner is
 # destroyed with the job, so nothing outlives it there.
-VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-3600}"
+VERIFY_TIMEOUT=3600
 
 mkdir -p "$OUTDIR"
 

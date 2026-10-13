@@ -2,7 +2,7 @@
 #
 # Put the verdicts and the inventory in the bucket reproducible.pkg.haus reads.
 #
-#   scripts/publish.sh <verdict-dir> [inventory.json]
+#   scripts/publish.sh <verdict-dir> <inventory.json>
 #
 # <verdict-dir> holds <suite>/<arch>/<package>.json as verify.sh left it. Each
 # file replaces the object at the same path under verify/, once
@@ -65,8 +65,8 @@ if [ "${BASH_SOURCE[0]}" != "${0}" ]; then
     return 0
 fi
 
-VERDICT_DIR="${1:?usage: $0 <verdict-dir> [inventory.json]}"
-INVENTORY="${2:-}"
+VERDICT_DIR="${1:?usage: $0 <verdict-dir> <inventory.json>}"
+INVENTORY="${2:?usage: $0 <verdict-dir> <inventory.json>}"
 
 R2_BUCKET="${R2_BUCKET:-pkghaus-reproducible}"
 
@@ -95,10 +95,8 @@ python3 "$(dirname "${BASH_SOURCE[0]}")/roll-index.py" "$all_dir" "$rolled"
 aws_ s3 cp "$rolled" "s3://$R2_BUCKET/verdicts.json" \
     --content-type 'application/json' --only-show-errors
 
-if [ -n "$INVENTORY" ]; then
-    [ -s "$INVENTORY" ] || {
-        printf 'FATAL: %s is missing or empty\n' "$INVENTORY" >&2; exit 1; }
-    printf 'uploading the inventory\n' >&2
-    aws_ s3 cp "$INVENTORY" "s3://$R2_BUCKET/inventory.json" \
-        --content-type 'application/json' --only-show-errors
-fi
+[ -s "$INVENTORY" ] || {
+    printf 'FATAL: %s is missing or empty\n' "$INVENTORY" >&2; exit 1; }
+printf 'uploading the inventory\n' >&2
+aws_ s3 cp "$INVENTORY" "s3://$R2_BUCKET/inventory.json" \
+    --content-type 'application/json' --only-show-errors
