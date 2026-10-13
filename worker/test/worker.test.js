@@ -462,8 +462,8 @@ test("a range past the end is 416 with the size, never 404 and never 500", async
   assert.equal(r.headers.get("cache-control"), "no-store");
 });
 
-// get() throws the range error and the object is gone by the time head() runs,
-// which is what a replaced verdict racing a reader looks like.
+// get() throws the range error and the object is deleted before head() runs.
+// An overwrite cannot do this: R2 overwrites are atomic, so head() sees the new object.
 test("a verdict that vanishes between get and head is 404, not a 416 of size 0", async () => {
   resetCache();
   const vanishing = { ...fakeBucket(FIXTURE), head: async () => null };
