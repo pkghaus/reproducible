@@ -462,6 +462,20 @@ test("a range past the end is 416 with the size, never 404 and never 500", async
   assert.equal(r.headers.get("cache-control"), "no-store");
 });
 
+// get() throws the range error and the object is deleted before head() runs.
+// An overwrite cannot do this: R2 overwrites are atomic, so head() sees the new object.
+test("a verdict that vanishes between get and head is 404, not a 416 of size 0", async () => {
+  resetCache();
+  const vanishing = { ...fakeBucket(FIXTURE), head: async () => null };
+  const size = FIXTURE["verify/unstable/amd64/croc.json"].length;
+  const r = await worker.fetch(
+    new Request("https://reproducible.pkg.haus/verify/unstable/amd64/croc.json",
+      { headers: { range: `bytes=${size + 10}-` } }),
+    { VERDICTS: vanishing }, ctx);
+  assert.equal(r.status, 404);
+  assert.equal(r.headers.get("content-range"), null);
+});
+
 test("a satisfiable range is a 206 with a real content-range", async () => {
   resetCache();
   const r = await get("/verify/unstable/amd64/croc.json", { headers: { range: "bytes=0-9" } });

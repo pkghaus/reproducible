@@ -874,7 +874,7 @@ async function serve(request, env, ctx, path) {
     } catch (e) {
       if (isUnsatisfiableRange(e)) {
         const head = await env.VERDICTS.head(key);
-        return unsatisfiable(head ? head.size : 0);
+        return head ? unsatisfiable(head.size) : notFound();
       }
       throw e;
     }
