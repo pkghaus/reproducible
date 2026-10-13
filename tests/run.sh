@@ -53,7 +53,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=176
+EXPECTED_ASSERTIONS=178
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -199,6 +199,18 @@ print("yes" if r["buildinfo"].endswith("_2026.09.11_amd64.buildinfo") else "no")
         "$ROOT/scripts/inventory.sh" "$WORK/gone.json" >/dev/null 2>&1
     then unfetchable=no; else unfetchable=yes; fi
     eq "an unfetchable index is fatal" "yes" "$unfetchable"
+
+    # A blank SUITES (empty falls back to the default) leaves no targets: that
+    # FATAL must be the failure, not a python traceback.
+    if msg="$(ARCHIVE_URL="file://$archive" SUITES=" " ARCHES="amd64" \
+        "$ROOT/scripts/inventory.sh" "$WORK/none.json" 2>&1)"
+    then nosuites=no; else nosuites=yes; fi
+    eq "a blank SUITES is fatal" "yes" "$nosuites"
+    case "$msg" in
+        *"FATAL: inventory has no targets"*) named=yes ;;
+        *) named=no ;;
+    esac
+    eq "and it names the missing targets, not a traceback" "yes" "$named"
     exit $((fail > 0))
 ) || groups_failed=$((groups_failed + 1))
 

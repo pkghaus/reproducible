@@ -22,10 +22,10 @@ set -euo pipefail
 shopt -s inherit_errexit
 
 ARCHIVE_URL="${ARCHIVE_URL:-https://apt.pkg.haus}"
-BUILDINFOS_URL="${BUILDINFOS_URL:-https://buildinfos.pkg.haus}"
+BUILDINFOS_URL=https://buildinfos.pkg.haus
 SUITES="${SUITES:-trixie testing unstable}"
 ARCHES="${ARCHES:-amd64 arm64}"
-UA="${PKGHAUS_UA:-curl pkghaus-ci}"
+UA="curl pkghaus-ci"
 
 # The end-to-end test reaches this through a file:// ARCHIVE_URL.
 fetch_index() { # suite arch
@@ -92,62 +92,45 @@ OUT="${1:-inventory.json}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
+: > "$work/rows.tsv"
 for suite in $SUITES; do
     for arch in $ARCHES; do
-        index_rows fetch_index "$suite" "$arch" > "$work/$suite.$arch.tsv"
+        index_rows fetch_index "$suite" "$arch" > "$work/index.tsv"
         # An index that yields nothing is a broken fetch or a broken publish,
         # never an empty archive: every suite carries the whole fleet. Reporting
         # 0 published would make coverage read as a full sweep of nothing.
-        [ -s "$work/$suite.$arch.tsv" ] || {
+        [ -s "$work/index.tsv" ] || {
             printf 'FATAL: %s/%s published no packages\n' "$suite" "$arch" >&2
             exit 1
         }
+        while IFS=$'\t' read -r pkg ver src indexarch; do
+            barch="$(build_arch "$indexarch")"
+            printf '%s/%s\t%s\t%s\t%s\t%s\n' "$suite" "$arch" "$pkg" "$ver" "$barch" \
+                "$(buildinfo_url "$pkg" "$ver" "$barch" "$src")"
+        done < "$work/index.tsv" >> "$work/rows.tsv"
     done
 done
 
-{
-    printf '{\n'
-    printf '  "generated_at": "%s",\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-    printf '  "archive": "%s",\n' "$ARCHIVE_URL"
-    printf '  "targets": {\n'
-    first_target=1
-    for suite in $SUITES; do
-        for arch in $ARCHES; do
-            [ "$first_target" -eq 1 ] || printf ',\n'
-            first_target=0
-            printf '    "%s/%s": [\n' "$suite" "$arch"
-            first_row=1
-            while IFS=$'\t' read -r pkg ver src indexarch; do
-                [ "$first_row" -eq 1 ] || printf ',\n'
-                first_row=0
-                barch="$(build_arch "$indexarch")"
-                printf '      {"package": "%s", "version": "%s", "build_arch": "%s", "buildinfo": "%s"}' \
-                    "$pkg" "$ver" "$barch" \
-                    "$(buildinfo_url "$pkg" "$ver" "$barch" "$src")"
-            done < "$work/$suite.$arch.tsv"
-            printf '\n    ]'
-        done
-    done
-    printf '\n  }\n}\n'
-} > "$OUT"
-
-# The emitted file has to parse, and it has to be the shape the Worker reads.
-# A JSON writer built from printf is one unescaped character away from silent
-# garbage, and the Worker answers a malformed inventory with zero published --
-# which reads on the page as a fleet that does not exist.
-python3 - "$OUT" <<'PY'
-import json, sys
-inv = json.load(open(sys.argv[1], encoding="utf-8"))
-targets = inv["targets"]
+# The Worker answers a malformed inventory with zero published, which reads on
+# the page as a fleet that does not exist, so a row missing a field is fatal.
+python3 - "$OUT" "$ARCHIVE_URL" "$work/rows.tsv" <<'PY'
+import datetime, json, sys
+out, archive, rows = sys.argv[1:4]
+FIELDS = ("package", "version", "build_arch", "buildinfo")
+targets = {}
+for line in open(rows, encoding="utf-8"):
+    target, *values = line.rstrip("\n").split("\t")
+    row = dict(zip(FIELDS, values))
+    missing = [f for f in FIELDS if not row.get(f)]
+    if missing:
+        sys.exit(f"FATAL: {target} has a row missing {missing[0]}: {row!r}")
+    targets.setdefault(target, []).append(row)
 if not targets:
     sys.exit("FATAL: inventory has no targets")
-for key, rows in targets.items():
-    if not rows:
-        sys.exit(f"FATAL: {key} is empty")
-    for row in rows:
-        for field in ("package", "version", "build_arch", "buildinfo"):
-            if not isinstance(row.get(field), str) or not row[field]:
-                sys.exit(f"FATAL: {key} has a row missing {field}: {row!r}")
+now = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+with open(out, "w", encoding="utf-8") as handle:
+    json.dump({"generated_at": now, "archive": archive, "targets": targets},
+              handle, indent=2)
 print(f"{sum(len(r) for r in targets.values())} artifacts across {len(targets)} targets",
       file=sys.stderr)
 PY

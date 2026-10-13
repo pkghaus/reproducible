@@ -20,7 +20,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import worker, {
-  baseVersion, byPackage, inventoryHas, inventoryPackages, listAll,
+  baseVersion, byPackage, inventoryPackages, listAll,
   loadInventory, loadVerdicts, publishedFor, renderPackage, renderRoot, scanVerdicts,
   sizeDelta, historyCells, historyRate, hasMixedHistory, HISTORY_SLOTS,
   resolveRange, summarise, totals, verdictClass, breadcrumb,
@@ -290,8 +290,8 @@ test("the inventory's package list survives a malformed target", () => {
   assert.deepEqual(
     [...inventoryPackages({ targets: { "a/b": [{ package: "x" }, {}, null] } }).keys()],
     ["x"]);
-  assert.equal(inventoryHas(INVENTORY, "berry"), true);
-  assert.equal(inventoryHas(INVENTORY, "nosuch"), false);
+  assert.equal(inventoryPackages(INVENTORY).has("berry"), true);
+  assert.equal(inventoryPackages(INVENTORY).has("nosuch"), false);
 });
 
 test("listAll follows the cursor rather than stopping at one page", async () => {
