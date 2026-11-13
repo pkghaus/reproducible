@@ -53,7 +53,7 @@ groups_failed=0
 # The count goes through a file because a variable incremented in a subshell
 # never reaches this scope. Update the number deliberately: that edit is
 # someone noticing it moved.
-EXPECTED_ASSERTIONS=178
+EXPECTED_ASSERTIONS=194
 TALLY="$(mktemp)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$TALLY" "$WORK"' EXIT
@@ -838,6 +838,102 @@ PYT
     eq "and both uploads run under always()" "always() always()" "$(printf '%s\n' "$got" | sed -n 2p)"
     eq "and verify.sh is the step's process, so the timeout's signal reaches it" \
        "exec" "$(printf '%s\n' "$got" | sed -n 3p)"
+    exit $((fail > 0))
+) || groups_failed=$((groups_failed + 1))
+
+echo "a verifier image that will not build fails the leg, not the artifact"
+(
+    # shellcheck source=scripts/verify.sh
+    . "$ROOT/scripts/verify.sh"
+    set +e; shopt -u inherit_errexit
+
+    # The real rebuild.sh against a stub docker. BuildKit prints a failed RUN's
+    # output only in plain progress, which is where apt's reason lives.
+    stub="$(mktemp -d)"
+    mkdir -p "$stub/bin" "$stub/in"
+    cat > "$stub/bin/docker" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+    build)
+        echo '#5 2.851 E: Unable to locate package devscripts'
+        [ "${DOCKER_BUILD_FAILS:-0}" = 1 ] || exit 0
+        echo 'ERROR: failed to solve: exit code: 100' >&2
+        exit 1 ;;
+    run) echo 'docker run reached' ;;
+esac
+STUB
+    chmod +x "$stub/bin/docker"
+    printf 'Format: 1.0\nVersion: 1.0-1\n' > "$stub/in/x_1.0-1_amd64.buildinfo"
+
+    out="$(DOCKER_BUILD_FAILS=1 PATH="$stub/bin:$PATH" "$ROOT/verify/rebuild.sh" "$stub/in" 2>&1)"
+    eq "a failed image build fails the rebuild" "1" "$?"
+    has "and apt's own error reaches the log" "E: Unable to locate package devscripts" "$out"
+    eq "and its last line is the one verify.sh looks for" "1" \
+       "$(printf '%s\n' "$out" | tail -1 | grep -cE "$NO_IMAGE")"
+    eq "and nothing is rebuilt without an image" "0" "$(printf '%s\n' "$out" | grep -c 'docker run reached')"
+
+    out="$(PATH="$stub/bin:$PATH" "$ROOT/verify/rebuild.sh" "$stub/in" 2>&1)"
+    eq "a good image build goes on to the rebuild" "0" "$?"
+    eq "and keeps its own output out of the log" "0" "$(printf '%s\n' "$out" | grep -c 'Unable to locate')"
+    rm -rf "$stub"
+
+    # verify.sh end to end over two planned items, in a copy of the root
+    # because verify/rebuild.sh is a twin. FAIL_AT names the item whose rebuild
+    # fails, FAIL_KIND how: no image, or a fetch error inside the rebuild.
+    fake="$(mktemp -d)"
+    mkdir -p "$fake/scripts" "$fake/verify" "$fake/pool"
+    cp "$ROOT/scripts/verify.sh" "$fake/scripts/"
+    cat > "$fake/verify/rebuild.sh" <<'STUB'
+#!/usr/bin/env bash
+bi="$(basename "$(find "$1" -maxdepth 1 -name '*.buildinfo' -print -quit)")"
+pkg="${bi%%_*}"
+echo "$pkg" >> "$CALLS"
+if [ "$pkg" = "$FAIL_AT" ]; then
+    case "$FAIL_KIND" in
+        image)
+            echo 'E: Unable to locate package devscripts'
+            echo 'FATAL: could not build the verifier image pkghaus-verify:sid from debian:sid' >&2 ;;
+        fetch) echo 'E: Failed to fetch http://snapshot.debian.org/archive/debian/x Connection timed out' ;;
+    esac
+    exit 1
+fi
+echo "checking ${pkg}_1_amd64.deb: size... sha256... all OK"
+STUB
+    chmod +x "$fake/verify/rebuild.sh"
+    items=""
+    for p in a b; do
+        printf 'Format: 1.0\nChecksums-Sha256:\n 00 1 %s_1.dsc\n' "$p" > "$fake/pool/${p}_1_amd64.buildinfo"
+        printf 'Format: 3.0 (native)\nChecksums-Sha256:\n 00 1 %s_1.tar.xz\n' "$p" > "$fake/pool/${p}_1.dsc"
+        : > "$fake/pool/${p}_1.tar.xz"
+        items="$items{\"package\":\"$p\",\"version\":\"1\",\"suite\":\"unstable\",\"build_arch\":\"amd64\",\"buildinfo\":\"file://$fake/pool/${p}_1_amd64.buildinfo\",\"targets\":[\"unstable/amd64\"]},"
+    done
+    printf '{"items":[%s],"legs":[]}\n' "${items%,}" > "$fake/plan.json"
+
+    run_leg() { # fail-at fail-kind -> exit status; verdicts in $fake/out, stderr in $fake/err
+        rm -rf "$fake/out" "$fake/calls"
+        CALLS="$fake/calls" FAIL_AT="$1" FAIL_KIND="$2" \
+            "$fake/scripts/verify.sh" "$fake/plan.json" unstable amd64 "$fake/out" 2>"$fake/err" >/dev/null
+    }
+    status_of() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["status"])' "$1" 2>/dev/null; }
+
+    run_leg b image
+    eq "no image on the second item fails the leg" "1" "$?"
+    eq "and the first item's verdict is kept" "GOOD" "$(status_of "$fake/out/unstable/amd64/a.json")"
+    eq "and the second gets none, so it keeps the one it had" "no" \
+       "$([ -e "$fake/out/unstable/amd64/b.json" ] && echo yes || echo no)"
+    has "and the leg's log carries apt's reason" "E: Unable to locate package devscripts" "$(cat "$fake/err")"
+    has "and says why the leg failed" "no verifier image for unstable/amd64" "$(cat "$fake/err")"
+
+    run_leg a image
+    eq "no image on the first item fails the leg too" "1" "$?"
+    eq "and nothing after it is attempted" "a" "$(tr '\n' ' ' < "$fake/calls" | sed 's/ $//')"
+
+    # Every other failure inside a rebuild is still an artifact's UNKWN.
+    run_leg a fetch
+    eq "a snapshot fetch failure does not fail the leg" "0" "$?"
+    eq "it is that artifact's UNKWN" "UNKWN" "$(status_of "$fake/out/unstable/amd64/a.json")"
+    eq "and the leg goes on to the next" "GOOD" "$(status_of "$fake/out/unstable/amd64/b.json")"
+    rm -rf "$fake"
     exit $((fail > 0))
 ) || groups_failed=$((groups_failed + 1))
 
