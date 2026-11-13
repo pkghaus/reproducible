@@ -27,6 +27,10 @@
 # state, not a rounding error: snapshot.debian.org is a rate-limited volunteer
 # service and it decides how much of this page is ever populated.
 #
+# A verifier image that will not build is not a verdict at all. It says
+# nothing about any artifact and stops every rebuild on the leg, so the leg
+# fails and each artifact keeps the verdict it already had.
+#
 # Classification is written against debrebuild's SOURCE rather than its manual.
 # Its comparison loop prints "checking <file>: size... sha256... all OK" per
 # file and `die`s -- to stderr, exit non-zero -- with one of four fixed
@@ -94,6 +98,9 @@ size_of() { record_field "$1" "$2" 2; } # file name
 # exists to report. Captured 2026-09-21 from pkghaus-archive-keyring
 # 2026.09.11 with one byte of its recorded sha256 altered.
 DIFFERS='(value of [a-z0-9]+ differs for |size differs for |different checksum files at position |new buildinfo contains a different number of files)'
+
+# The line verify/rebuild.sh prints when its image will not build.
+NO_IMAGE='^FATAL: could not build the verifier image '
 
 # GOOD, BAD or UNKWN from the rebuild's exit status and its log.
 #
@@ -263,6 +270,11 @@ while IFS=$'\t' read -r package version buildinfo targets; do
         if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
             verdict=UNKWN
             reason="the rebuild did not finish within ${VERIFY_TIMEOUT}s"
+        elif grep -qE "$NO_IMAGE" "$log"; then
+            tail -45 "$log" >&2
+            printf 'FATAL: no verifier image for %s/%s; failing the leg instead of writing UNKWN\n' \
+                "$SUITE" "$BUILD_ARCH" >&2
+            exit 1
         else
             verdict="$(classify "$status" "$log")"
             summary="$(summarise_log "$verdict" "$log")"

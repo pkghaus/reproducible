@@ -25,6 +25,9 @@ record names. A timeout there, a dependency that is no longer resolvable, or a
 rebuild that failed to build at all is not evidence about this archive, and
 recording it as `BAD` would be a claim the run cannot support.
 
+A verifier image that will not build is not a verdict at all. That leg of the
+run fails, and every artifact on it keeps the verdict it already had.
+
 The percentage on the front page is over **decided** verdicts, never over
 everything published: a denominator that grows with the fleet would fall every
 time a package is added and would say nothing about reproducibility. Coverage
